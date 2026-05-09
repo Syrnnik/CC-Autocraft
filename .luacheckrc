@@ -1,0 +1,43 @@
+std = "lua51"
+max_line_length = 80
+allow_defined_top = true
+exclude_files = {}
+
+globals = {
+  "colors",
+  "colours",
+  "commands",
+  "disk",
+  "fs",
+  "gps",
+  "help",
+  "http",
+  "io",
+  "keys",
+  "multishell",
+  "os",
+  "paintutils",
+  "parallel",
+  "peripheral",
+  "pocket",
+  "rednet",
+  "redstone",
+  "rs",
+  "settings",
+  "shell",
+  "term",
+  "textutils",
+  "turtle",
+  "vector",
+  "window",
+  "sleep",
+  "write",
+  "print",
+  "printError",
+  "read",
+  "_HOST",
+  "_CC_DEFAULT_SETTINGS",
+  "bit32",
+  "utf8",
+  "arg",
+}
