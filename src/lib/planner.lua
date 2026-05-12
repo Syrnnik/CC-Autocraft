@@ -14,7 +14,11 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals)
   -- Virtual stock: real stock minus items already allocated to plan steps.
   -- Surplus from crafts (e.g. recipe yields 4, only 3 needed) is tracked too.
   -- Damageable items are counted in remaining uses, not item count.
-  local available = totals or Stock.getDurabilityAwareTotals()
+  local src = totals or Stock.getDurabilityAwareTotals()
+  local available = {}
+  for k, v in pairs(src) do
+    available[k] = v
+  end
 
   -- useStock: for sub-crafts, consume from virtual stock first, craft only
   -- the remainder. For the root item always craft the full requested amount.
