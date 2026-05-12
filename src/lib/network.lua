@@ -27,7 +27,7 @@ end
 
 function Network.sendEvent(recepientID, eventName)
   Logger.printDebug(
-    string.format("Sending event '%s' to '%s'", eventName, recepientID)
+    string.format("Sending event '%s' to '%s'", eventName or "ok", recepientID)
   )
 
   return rednet.send(recepientID, eventName)

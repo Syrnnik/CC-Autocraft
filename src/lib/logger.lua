@@ -39,14 +39,24 @@ end
 
 local Logger = {}
 
-function Logger.raiseError(...)
-  Logger.printError(...)
-  error("", 0)
-end
+-- Keeps track of the last printed error so raiseError() can propagate it
+-- even when called without arguments (after a manual Logger.printError call).
+local lastErrorMsg = nil
 
 function Logger.printError(...)
-  -- _print(textColorError, bgColorError, ...)
+  local parts = {}
+  for i = 1, select("#", ...) do
+    parts[i] = valueToString(select(i, ...))
+  end
+  lastErrorMsg = table.concat(parts, " ")
   _print(textColorError, nil, ...)
+end
+
+function Logger.raiseError(msg, ...)
+  if msg ~= nil then
+    Logger.printError(msg, ...)
+  end
+  error(lastErrorMsg or "error", 0)
 end
 
 function Logger.printWarning(...)

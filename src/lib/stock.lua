@@ -3,15 +3,18 @@ local Logger = require("lib.logger")
 local Recipes = require("lib.recipes")
 
 local stockName = Config.STOCK_NAME
-local stock = peripheral.wrap(stockName)
 
 local Stock = {}
+
+local function getStock()
+  return peripheral.wrap(stockName)
+end
 
 function Stock.getMissingItems(items)
   -- Sum totals across all stock slots (handles split stacks)
   local stockTotals = {}
   local stockFirstSlot = {}
-  for slot, stockItem in pairs(stock.list()) do
+  for slot, stockItem in pairs(getStock().list()) do
     local name = stockItem.name
     stockTotals[name] = (stockTotals[name] or 0) + stockItem.count
     if not stockFirstSlot[name] then
@@ -72,7 +75,7 @@ function Stock.getItemsForRecipe(recipe)
   -- This allows recipe positions to be spread across multiple source slots
   -- when the total needed exceeds what any single slot holds.
   local slotsByName = {}
-  for slot, item in pairs(stock.list()) do
+  for slot, item in pairs(getStock().list()) do
     local name = item.name
     if not slotsByName[name] then
       slotsByName[name] = {}
@@ -114,7 +117,7 @@ end
 
 function Stock.getTotals()
   local totals = {}
-  for _, item in pairs(stock.list()) do
+  for _, item in pairs(getStock().list()) do
     local name = item.name
     totals[name] = (totals[name] or 0) + item.count
   end
