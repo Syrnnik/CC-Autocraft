@@ -11,7 +11,11 @@ Config.NEW_RECIPE_INTERFACE_NAME = "minecraft:barrel_0"
 Config.CRAFTER_NAME = "turtle_2"
 Config.CRAFTER_NETWORK_ID = 5
 Config.MONITOR_NAME = "monitor_1"
+
 Config.MONITOR_TEXT_SCALE = 1.0
+
+Config.CRAFT_TIMEOUT = 30
+Config.MACHINE_CRAFT_TIMEOUT = 10
 
 Config.PATTERN_SIZE = 3
 Config.CRAFTER_ROW_SIZE = 4
@@ -23,8 +27,6 @@ Config.RECIPES_PATH = "data/recipes.json"
 Config.NETWORK_EVENTS = {
   CRAFT = "craft",
 }
-
-Config.CRAFT_TIMEOUT = 30
 
 Config.BG_COLOR_DEFAULT = colors.black
 Config.TEXT_COLOR_DEFAULT = colors.white

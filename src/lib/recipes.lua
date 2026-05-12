@@ -177,24 +177,84 @@ function Recipes.addNewRecipe(newRecipe)
   Recipes.saveAllRecipes(recipes)
 end
 
-function Recipes.saveRecipe(recipeItems, craftedItem)
+function Recipes.saveRecipe(
+  recipeItems,
+  craftedItem,
+  type,
+  processor,
+  resultProcessor
+)
   local items = {}
 
-  for _, item in ipairs(recipeItems) do
-    table.insert(items, {
-      name = item.name,
-      count = item.count,
-      slot = item.recipeSlot,
-    })
+  if type == "machine" then
+    for _, item in ipairs(recipeItems) do
+      table.insert(items, {
+        name = item.name,
+        count = item.count,
+        processor = item.processor,
+      })
+    end
+  else
+    for _, item in ipairs(recipeItems) do
+      table.insert(items, {
+        name = item.name,
+        count = item.count,
+        slot = item.recipeSlot,
+      })
+    end
   end
 
   local recipe = {
     name = craftedItem.name,
     count = craftedItem.count,
     items = items,
+    type = type or "crafter",
   }
 
+  if type == "machine" then
+    recipe.resultProcessor = resultProcessor
+  else
+    recipe.processor = processor or Config.CRAFTER_NAME
+  end
+
   Recipes.addNewRecipe(recipe)
+end
+
+-- Updates type, processor(s), and resultProcessor of an existing recipe.
+-- itemProcessors: { [itemName] = processorName } for machine recipes.
+function Recipes.updateRecipeProcessor(
+  recipeName,
+  type,
+  processor,
+  resultProcessor,
+  itemProcessors
+)
+  local recipes = Recipes.getAllRecipes()
+
+  if not recipes[recipeName] then
+    Logger.raiseError(string.format("Recipe '%s' not found", recipeName))
+  end
+
+  local recipe = recipes[recipeName]
+  recipe.type = type
+
+  if type == "machine" then
+    recipe.resultProcessor = resultProcessor
+    recipe.processor = nil
+    if itemProcessors then
+      for _, item in ipairs(recipe.items) do
+        if itemProcessors[item.name] then
+          item.processor = itemProcessors[item.name]
+        end
+      end
+    end
+  else
+    recipe.processor = processor or Config.CRAFTER_NAME
+    recipe.resultProcessor = nil
+  end
+
+  Recipes.saveAllRecipes(recipes)
+  Logger.printSuccess(string.format("Processor updated for '%s'", recipeName))
 end
 
 function Recipes.deleteRecipe(recipeName)
