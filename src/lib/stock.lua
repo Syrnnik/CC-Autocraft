@@ -173,18 +173,23 @@ function Stock.getDurabilityAwareTotals()
   local totals = {}
   local maxDmg = {}
 
-  for slot, _ in pairs(stock.list()) do
-    local detail = stock.getItemDetail(slot)
-    if detail then
-      local md = detail.maxDamage or 0
-      if maxDmg[detail.name] == nil then
-        maxDmg[detail.name] = md
-      end
-      if md > 0 then
-        totals[detail.name] = (totals[detail.name] or 0)
-          + (md - (detail.damage or 0))
-      else
-        totals[detail.name] = (totals[detail.name] or 0) + detail.count
+  for slot, item in pairs(stock.list()) do
+    -- Damageable items cannot stack, so skip getItemDetail for count > 1.
+    if item.count > 1 then
+      totals[item.name] = (totals[item.name] or 0) + item.count
+    else
+      local detail = stock.getItemDetail(slot)
+      if detail then
+        local md = detail.maxDamage or 0
+        if maxDmg[detail.name] == nil then
+          maxDmg[detail.name] = md
+        end
+        if md > 0 then
+          totals[detail.name] = (totals[detail.name] or 0)
+            + (md - (detail.damage or 0))
+        else
+          totals[detail.name] = (totals[detail.name] or 0) + 1
+        end
       end
     end
   end

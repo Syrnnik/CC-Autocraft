@@ -396,7 +396,8 @@ end
 function Crafting.craftItem(recipeName, count)
   Logger.printInfo(string.format("Planning '%s' x%d..", recipeName, count))
 
-  local plan = Planner.buildCraftPlan(recipeName, count)
+  local totals, maxDmg = Stock.getDurabilityAwareTotals()
+  local plan = Planner.buildCraftPlan(recipeName, count, totals)
 
   if #plan == 0 then
     Logger.raiseError(string.format("No recipe found for '%s'", recipeName))
@@ -404,7 +405,7 @@ function Crafting.craftItem(recipeName, count)
 
   Planner.printPlan(plan)
 
-  local missing = Planner.validatePlan(plan)
+  local missing = Planner.validatePlan(plan, totals, maxDmg)
   if #missing > 0 then
     Logger.printError("Missing items:")
     for _, item in pairs(missing) do

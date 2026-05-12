@@ -9,12 +9,12 @@ local Planner = {}
 -- so items already in stock are not crafted unnecessarily.
 -- Items without a recipe are treated as base materials (must be in stock).
 -- Returns list of { name, craftsCount, recipe }.
-function Planner.buildCraftPlan(recipeName, neededCount)
+function Planner.buildCraftPlan(recipeName, neededCount, totals)
   local plan = {}
   -- Virtual stock: real stock minus items already allocated to plan steps.
   -- Surplus from crafts (e.g. recipe yields 4, only 3 needed) is tracked too.
   -- Damageable items are counted in remaining uses, not item count.
-  local available = Stock.getDurabilityAwareTotals()
+  local available = totals or Stock.getDurabilityAwareTotals()
 
   -- useStock: for sub-crafts, consume from virtual stock first, craft only
   -- the remainder. For the root item always craft the full requested amount.
@@ -60,9 +60,17 @@ end
 
 -- Simulates plan execution against current stock and collects all shortfalls.
 -- Returns list of { name, count } for every item that would be missing.
-function Planner.validatePlan(plan)
+function Planner.validatePlan(plan, totals, maxDmg)
   local missingByName = {}
-  local virtual, maxDmg = Stock.getDurabilityAwareTotals()
+  local virtual
+  if totals then
+    virtual = {}
+    for k, v in pairs(totals) do
+      virtual[k] = v
+    end
+  else
+    virtual, maxDmg = Stock.getDurabilityAwareTotals()
+  end
 
   for _, step in ipairs(plan) do
     local craftsCount = step.craftsCount
