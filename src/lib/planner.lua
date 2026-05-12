@@ -11,13 +11,13 @@ local Planner = {}
 -- Returns list of { name, craftsCount, recipe }.
 function Planner.buildCraftPlan(recipeName, neededCount)
   local plan = {}
-  -- Virtual stock: real stock minus items already allocated to earlier plan steps.
-  -- Also accumulates surplus produced by crafts (e.g. recipe yields 4 but only 3 needed).
-  local available = Stock.getTotals()
+  -- Virtual stock: real stock minus items already allocated to plan steps.
+  -- Surplus from crafts (e.g. recipe yields 4, only 3 needed) is tracked too.
+  -- Damageable items are counted in remaining uses, not item count.
+  local available = Stock.getDurabilityAwareTotals()
 
-  -- useStock: for sub-crafts, consume from virtual stock first and only craft
-  -- the remainder. For the root item the user explicitly requested, always craft
-  -- the full amount regardless of what is already in stock.
+  -- useStock: for sub-crafts, consume from virtual stock first, craft only
+  -- the remainder. For the root item always craft the full requested amount.
   local function expand(name, count, useStock)
     local stillNeeded = count
 
@@ -39,14 +39,19 @@ function Planner.buildCraftPlan(recipeName, neededCount)
 
     local craftsCount = math.ceil(stillNeeded / recipe.count)
     -- Surplus produced by this batch goes back into virtual stock.
-    available[name] = (available[name] or 0) + craftsCount * recipe.count - stillNeeded
+    available[name] = (available[name] or 0)
+      + craftsCount * recipe.count
+      - stillNeeded
 
     local ingredients = Recipes.getRequiredItemsPlainList(recipe)
     for _, ingredient in pairs(ingredients) do
       expand(ingredient.name, ingredient.count * craftsCount, true)
     end
 
-    table.insert(plan, { name = name, craftsCount = craftsCount, recipe = recipe })
+    table.insert(
+      plan,
+      { name = name, craftsCount = craftsCount, recipe = recipe }
+    )
   end
 
   expand(recipeName, neededCount, false)
@@ -57,7 +62,7 @@ end
 -- Returns list of { name, count } for every item that would be missing.
 function Planner.validatePlan(plan)
   local missingByName = {}
-  local virtual = Stock.getTotals()
+  local virtual, maxDmg = Stock.getDurabilityAwareTotals()
 
   for _, step in ipairs(plan) do
     local craftsCount = step.craftsCount
@@ -69,8 +74,11 @@ function Planner.validatePlan(plan)
 
       if have < needed then
         local shortage = needed - have
-        missingByName[ingredient.name] =
-          (missingByName[ingredient.name] or 0) + shortage
+        -- For damageable items: shortage is in uses; convert to item count.
+        local md = maxDmg[ingredient.name] or 0
+        local itemShortage = md > 0 and math.ceil(shortage / md) or shortage
+        missingByName[ingredient.name] = (missingByName[ingredient.name] or 0)
+          + itemShortage
         virtual[ingredient.name] = 0
       else
         virtual[ingredient.name] = have - needed
