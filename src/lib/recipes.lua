@@ -197,6 +197,18 @@ function Recipes.saveRecipe(recipeItems, craftedItem)
   Recipes.addNewRecipe(recipe)
 end
 
+function Recipes.deleteRecipe(recipeName)
+  local recipes = Recipes.getAllRecipes()
+
+  if not recipes[recipeName] then
+    Logger.raiseError(string.format("Recipe '%s' not found", recipeName))
+  end
+
+  recipes[recipeName] = nil
+  Recipes.saveAllRecipes(recipes)
+  Logger.printSuccess(string.format("Recipe '%s' deleted", recipeName))
+end
+
 function Recipes.getRecipe(recipeName)
   local allRecipes = Recipes.getAllRecipes()
   local recipe = allRecipes[recipeName]

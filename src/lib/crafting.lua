@@ -136,21 +136,56 @@ function Crafting.craft(items, fromInterfaceName)
   end
 
   if msg then
-    Logger.printError(string.format("Crafter error: %s", msg))
+    Logger.printError(msg)
     Crafting.returnRecipeItems(items, fromInterfaceName)
     Logger.raiseError()
   end
 end
 
-function Crafting.processNewCraft()
+-- Pull all items from the crafter back to the recipe interface
+function Crafting.clearCrafter()
+  local interface = peripheral.wrap(newRecipeInterfaceName)
+  for slot = 1, 16 do
+    interface.pullItems(crafterName, slot)
+  end
+  Logger.printInfo("Crafter cleared")
+end
+
+-- Push recipe pattern slots (and crafted-item slot) from the recipe interface
+-- back to stock. Only touches the slots actually used for recipe input.
+function Crafting.clearRecipeInterface()
+  local stock = peripheral.wrap(stockName)
+
+  local rowSize    = Config.NEW_RECIPE_INTERFACE_ROW_SIZE
+  local pSize      = Config.PATTERN_SIZE
+  local pStart     = Config.PATTERN_START
+
+  -- Recipe pattern slots
+  for row = 0, pSize - 1 do
+    local rowStart = pStart + rowSize * row
+    local rowEnd   = rowStart + pSize - 1
+    for slot = rowStart, rowEnd do
+      stock.pullItems(newRecipeInterfaceName, slot)
+    end
+  end
+
+  -- Crafted-item result slot
+  local craftedSlot = Crafting.getSlotToPutItem()
+  stock.pullItems(newRecipeInterfaceName, craftedSlot)
+
+  Logger.printInfo("Recipe interface cleared")
+end
+
+-- Craft from the recipe interface and return the items + crafted result
+-- without saving anything. Raises an error on failure.
+function Crafting.craftNewRecipe()
   Logger.printDebug(
     string.format("Getting items from '%s'", newRecipeInterfaceName)
   )
   local recipeItems = Recipes.getNewRecipeItems(newRecipeInterfaceName)
 
   if #recipeItems == 0 then
-    Logger.printError("Items for new recipe not found")
-    return
+    Logger.raiseError("Items for new recipe not found")
   end
   Logger.printInfo("New recipe items:", Utils.serializeTable(recipeItems))
 
@@ -158,6 +193,12 @@ function Crafting.processNewCraft()
   Crafting.craft(recipeItems, newRecipeInterfaceName)
 
   local craftedItem = Crafting.getCraftedItem(newRecipeInterfaceName, true)
+  return recipeItems, craftedItem
+end
+
+-- Legacy entry point used by new_craft.lua (craft + auto-save)
+function Crafting.processNewCraft()
+  local recipeItems, craftedItem = Crafting.craftNewRecipe()
   local craftedItemName = craftedItem.name
 
   local isExists, _ = pcall(Recipes.getRecipe, craftedItemName)
