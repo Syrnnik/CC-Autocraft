@@ -1,10 +1,9 @@
 -- CC:Autocraft Installer
 -- Usage:
---   wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/main/install.lua
---   wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/main/install.lua dev
+--   wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua
 
 local args   = { ... }
-local BRANCH = args[1] or "main"
+local BRANCH = args[1] or "dev"
 local BASE   = "https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/"
   .. BRANCH .. "/src/"
 
