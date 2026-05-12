@@ -1,12 +1,17 @@
 local Config = {}
 
--- Config.IS_DEBUG_MODE = true
-Config.IS_DEBUG_MODE = false
+Config.IS_DEBUG_MODE = true
+-- Config.IS_DEBUG_MODE = false
+
+-- Config.CLEAR_CRAFTER_BEFORE_CRAFT = true
+Config.CLEAR_CRAFTER_BEFORE_CRAFT = false
 
 Config.STOCK_NAME = "create:item_vault_1"
 Config.NEW_RECIPE_INTERFACE_NAME = "minecraft:barrel_0"
 Config.CRAFTER_NAME = "turtle_2"
 Config.CRAFTER_NETWORK_ID = 5
+Config.MONITOR_NAME = "monitor_1"
+Config.MONITOR_TEXT_SCALE = 1.0
 
 Config.PATTERN_SIZE = 3
 Config.CRAFTER_ROW_SIZE = 4
@@ -20,7 +25,6 @@ Config.NETWORK_EVENTS = {
 }
 
 Config.CRAFT_TIMEOUT = 30
-Config.CLEAR_CRAFTER_BEFORE_CRAFT = true
 
 Config.BG_COLOR_DEFAULT = colors.black
 Config.TEXT_COLOR_DEFAULT = colors.white
