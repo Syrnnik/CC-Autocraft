@@ -115,6 +115,46 @@ function Stock.getItemsForRecipe(recipe)
   return pushList
 end
 
+-- Returns push list for machine recipes: one slot per recipe item,
+-- routed to the item's assigned processor.
+function Stock.getItemsForMachineRecipe(recipe)
+  local slotsByName = {}
+  for slot, item in pairs(getStock().list()) do
+    local name = item.name
+    if not slotsByName[name] then
+      slotsByName[name] = {}
+    end
+    table.insert(slotsByName[name], { slot = slot, remaining = item.count })
+  end
+
+  local pushList = {}
+  for _, recipeItem in pairs(recipe.items) do
+    local name = recipeItem.name
+    local slots = slotsByName[name] or {}
+
+    local assigned = false
+    for _, entry in ipairs(slots) do
+      if entry.remaining >= 1 then
+        entry.remaining = entry.remaining - 1
+        table.insert(pushList, {
+          name = name,
+          count = 1,
+          slot = entry.slot,
+          processor = recipeItem.processor,
+        })
+        assigned = true
+        break
+      end
+    end
+
+    if not assigned then
+      Logger.raiseError(string.format("Stock has no '%s'", name))
+    end
+  end
+
+  return pushList
+end
+
 function Stock.getTotals()
   local totals = {}
   for _, item in pairs(getStock().list()) do
@@ -122,6 +162,34 @@ function Stock.getTotals()
     totals[name] = (totals[name] or 0) + item.count
   end
   return totals
+end
+
+-- Like getTotals(), but damageable items are counted by remaining uses
+-- (maxDamage - damage) instead of item count.
+-- Also returns maxDmg map { [name] = maxDamage } for damageable items,
+-- used to convert a use-shortage back to an item count.
+function Stock.getDurabilityAwareTotals()
+  local stock = getStock()
+  local totals = {}
+  local maxDmg = {}
+
+  for slot, _ in pairs(stock.list()) do
+    local detail = stock.getItemDetail(slot)
+    if detail then
+      local md = detail.maxDamage or 0
+      if maxDmg[detail.name] == nil then
+        maxDmg[detail.name] = md
+      end
+      if md > 0 then
+        totals[detail.name] = (totals[detail.name] or 0)
+          + (md - (detail.damage or 0))
+      else
+        totals[detail.name] = (totals[detail.name] or 0) + detail.count
+      end
+    end
+  end
+
+  return totals, maxDmg
 end
 
 return Stock

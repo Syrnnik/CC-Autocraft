@@ -15,11 +15,23 @@ local craftTimeout = Config.CRAFT_TIMEOUT
 local clearCrafterBeforeCraft = Config.CLEAR_CRAFTER_BEFORE_CRAFT
 
 local patternSize = Config.PATTERN_SIZE
+local patternStart = Config.PATTERN_START
 local newRecipeInterfaceRowSize = Config.NEW_RECIPE_INTERFACE_ROW_SIZE
 
 local stockName = Config.STOCK_NAME
 
 local Crafting = {}
+
+local function patternSlots()
+  local slots = {}
+  for row = 0, patternSize - 1 do
+    local rowStart = patternStart + newRecipeInterfaceRowSize * row
+    for slot = rowStart, rowStart + patternSize - 1 do
+      table.insert(slots, slot)
+    end
+  end
+  return slots
+end
 
 function Crafting.getSlotToPutItem()
   return math.ceil(newRecipeInterfaceRowSize / 2)
@@ -142,6 +154,160 @@ function Crafting.craft(items, fromInterfaceName)
   end
 end
 
+-- Returns items in the recipe interface pattern slots only (same grid used by
+-- getNewRecipeItems). Ignores items in other slots (e.g. decoration stacks).
+function Crafting.getInterfaceItems()
+  local listing = peripheral.wrap(newRecipeInterfaceName).list()
+  local items = {}
+  for _, slot in ipairs(patternSlots()) do
+    local item = listing[slot]
+    if item then
+      table.insert(items, { name = item.name, count = item.count, slot = slot })
+    end
+  end
+  return items
+end
+
+-- Push machineItems from the recipe interface to their processors, wait for
+-- a result to appear in resultProcessor, pull it back, then clear all machines.
+function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
+  local interface = peripheral.wrap(newRecipeInterfaceName)
+
+  -- Items placed directly into the result machine (ignored during polling
+  -- until they are transformed into the actual result).
+  local inputsToResult = {}
+  for _, item in pairs(machineItems) do
+    if item.processor == resultProcessor then
+      inputsToResult[item.name] = true
+    end
+  end
+
+  for _, item in pairs(machineItems) do
+    Logger.printInfo(
+      string.format(
+        "Pushing '%s' (slot %d) to '%s'",
+        item.name,
+        item.slot,
+        item.processor
+      )
+    )
+    local pushed = interface.pushItems(item.processor, item.slot, item.count)
+    if pushed == 0 then
+      Logger.raiseError(
+        string.format("Failed to push '%s' to '%s'", item.name, item.processor)
+      )
+    end
+  end
+
+  -- Poll: wait until a non-input item appears in resultProcessor
+  local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
+  local destSlot = Crafting.getSlotToPutItem()
+  local crafted = nil
+
+  for _ = 1, steps do
+    local listing = peripheral.wrap(resultProcessor).list()
+    local resultSlot = nil
+    for s, sItem in pairs(listing) do
+      if not inputsToResult[sItem.name] then
+        resultSlot = s
+        break
+      end
+    end
+    if resultSlot then
+      interface.pullItems(resultProcessor, resultSlot, nil, destSlot)
+      crafted = interface.getItemDetail(destSlot)
+      break
+    end
+    os.sleep(0.5)
+  end
+
+  -- Always clear all machines (whether success or timeout)
+  local seen = {}
+  for _, item in pairs(machineItems) do
+    if not seen[item.processor] then
+      seen[item.processor] = true
+      for slot, _ in pairs(peripheral.wrap(item.processor).list()) do
+        interface.pullItems(item.processor, slot)
+      end
+    end
+  end
+
+  if not crafted then
+    Logger.raiseError(
+      "Machine craft timed out: no result from " .. resultProcessor
+    )
+  end
+
+  return crafted
+end
+
+-- Execute one machine craft cycle from stock: push items to their processors,
+-- wait for the result, pull it to stock, then clear all machines.
+function Crafting.craftMachine(recipe)
+  local stock = peripheral.wrap(stockName)
+  local pushList = Stock.getItemsForMachineRecipe(recipe)
+
+  -- Items placed directly into the result machine (ignored during polling)
+  local inputsToResult = {}
+  for _, item in pairs(recipe.items) do
+    if item.processor == recipe.resultProcessor then
+      inputsToResult[item.name] = true
+    end
+  end
+
+  for _, item in pairs(pushList) do
+    Logger.printInfo(
+      string.format("Pushing '%s' to '%s'", item.name, item.processor)
+    )
+    local pushed = stock.pushItems(item.processor, item.slot, item.count)
+    if pushed == 0 then
+      Logger.raiseError(
+        string.format("Failed to push '%s' to '%s'", item.name, item.processor)
+      )
+    end
+  end
+
+  -- Poll: wait until a non-input item appears in resultProcessor
+  local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
+  local got = false
+
+  for _ = 1, steps do
+    local listing = peripheral.wrap(recipe.resultProcessor).list()
+    local resultSlot = nil
+    for s, sItem in pairs(listing) do
+      if not inputsToResult[sItem.name] then
+        resultSlot = s
+        break
+      end
+    end
+    if resultSlot then
+      for s, _ in pairs(peripheral.wrap(recipe.resultProcessor).list()) do
+        stock.pullItems(recipe.resultProcessor, s)
+      end
+      got = true
+      break
+    end
+    os.sleep(0.5)
+  end
+
+  -- Always clear all machines (whether success or timeout)
+  local seen = {}
+  for _, item in pairs(recipe.items) do
+    if not seen[item.processor] then
+      seen[item.processor] = true
+      for slot, _ in pairs(peripheral.wrap(item.processor).list()) do
+        stock.pullItems(item.processor, slot)
+      end
+    end
+  end
+
+  if not got then
+    Logger.raiseError(
+      "Machine craft timed out: no result from " .. recipe.resultProcessor
+    )
+  end
+end
+
 -- Pull all items from the crafter back to the recipe interface
 function Crafting.clearCrafter()
   local interface = peripheral.wrap(newRecipeInterfaceName)
@@ -155,24 +321,10 @@ end
 -- back to stock. Only touches the slots actually used for recipe input.
 function Crafting.clearRecipeInterface()
   local stock = peripheral.wrap(stockName)
-
-  local rowSize    = Config.NEW_RECIPE_INTERFACE_ROW_SIZE
-  local pSize      = Config.PATTERN_SIZE
-  local pStart     = Config.PATTERN_START
-
-  -- Recipe pattern slots
-  for row = 0, pSize - 1 do
-    local rowStart = pStart + rowSize * row
-    local rowEnd   = rowStart + pSize - 1
-    for slot = rowStart, rowEnd do
-      stock.pullItems(newRecipeInterfaceName, slot)
-    end
+  for _, slot in ipairs(patternSlots()) do
+    stock.pullItems(newRecipeInterfaceName, slot)
   end
-
-  -- Crafted-item result slot
-  local craftedSlot = Crafting.getSlotToPutItem()
-  stock.pullItems(newRecipeInterfaceName, craftedSlot)
-
+  stock.pullItems(newRecipeInterfaceName, Crafting.getSlotToPutItem())
   Logger.printInfo("Recipe interface cleared")
 end
 
@@ -214,12 +366,26 @@ end
 function Crafting.processCraft(recipe)
   local recipeItem = recipe.name
   local recipeCount = recipe.count
+  local recipeType = recipe.type or "crafter"
+  local processor = recipe.processor or crafterName
 
-  Logger.printInfo(string.format("Crafting '%s' x%d", recipeItem, recipeCount))
+  Logger.printInfo(
+    string.format(
+      "Crafting '%s' x%d [%s:%s]",
+      recipeItem,
+      recipeCount,
+      recipeType,
+      processor
+    )
+  )
 
-  local stockItems = Stock.getItemsForRecipe(recipe)
-  Crafting.craft(stockItems, stockName)
-  Crafting.getCraftedItem(stockName, false)
+  if recipeType == "machine" then
+    Crafting.craftMachine(recipe)
+  else
+    local stockItems = Stock.getItemsForRecipe(recipe)
+    Crafting.craft(stockItems, stockName)
+    Crafting.getCraftedItem(stockName, false)
+  end
 
   Logger.printSuccess(
     string.format("Crafted '%s' x%d", recipeItem, recipeCount)
