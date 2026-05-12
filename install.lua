@@ -1,13 +1,15 @@
 -- CC:Autocraft Installer
 -- Usage:
---   wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua
+--   wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua computer
+--   wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua crafter
 
 local args   = { ... }
-local BRANCH = args[1] or "dev"
+local TARGET = args[1]
+local BRANCH = "dev"
 local BASE   = "https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/"
   .. BRANCH .. "/src/"
 
-local FILES = {
+local COMPUTER_FILES = {
   "lib/config.lua",
   "lib/crafting.lua",
   "lib/logger.lua",
@@ -20,7 +22,6 @@ local FILES = {
   "lib/utils.lua",
   "all_recipes.lua",
   "craft.lua",
-  "crafter.lua",
   "delete_recipe.lua",
   "device_id.lua",
   "get_recipe.lua",
@@ -29,9 +30,28 @@ local FILES = {
   "new_craft.lua",
 }
 
+local CRAFTER_FILES = {
+  "lib/config.lua",
+  "lib/logger.lua",
+  "lib/network.lua",
+  "lib/screen.lua",
+  "lib/utils.lua",
+  "crafter.lua",
+  "device_id.lua",
+}
+
+local FILES_BY_TARGET = {
+  computer = COMPUTER_FILES,
+  crafter  = CRAFTER_FILES,
+}
+
+if not TARGET or not FILES_BY_TARGET[TARGET] then
+  print("Usage: install.lua <computer|crafter>")
+  return
+end
+
 local function download(path)
-  local url = BASE .. path
-  local res = http.get(url)
+  local res = http.get(BASE .. path)
   if not res then
     return false, "request failed"
   end
@@ -52,11 +72,11 @@ local function download(path)
   return true
 end
 
-print("CC:Autocraft installer (branch: " .. BRANCH .. ")")
+print("CC:Autocraft installer (" .. TARGET .. ")")
 print(string.rep("-", 40))
 
 local failed = {}
-for _, file in ipairs(FILES) do
+for _, file in ipairs(FILES_BY_TARGET[TARGET]) do
   io.write("  " .. file .. "... ")
   local ok, err = download(file)
   if ok then
@@ -67,7 +87,7 @@ for _, file in ipairs(FILES) do
   end
 end
 
-if not fs.exists("data") then
+if TARGET == "computer" and not fs.exists("data") then
   fs.makeDir("data")
   print("  data/ ... ok")
 end
