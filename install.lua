@@ -8,6 +8,7 @@ local TARGET = args[1]
 local BRANCH = "dev"
 local BASE   = "https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/"
   .. BRANCH .. "/src/"
+local DEST   = "autocraft"
 
 local COMPUTER_FILES = {
   "lib/config.lua",
@@ -58,12 +59,13 @@ local function download(path)
   local content = res.readAll()
   res.close()
 
-  local dir = fs.getDir(path)
-  if dir ~= "" and not fs.exists(dir) then
+  local dest = DEST .. "/" .. path
+  local dir  = fs.getDir(dest)
+  if not fs.exists(dir) then
     fs.makeDir(dir)
   end
 
-  local f = fs.open(path, "w")
+  local f = fs.open(dest, "w")
   if not f then
     return false, "cannot write file"
   end
@@ -87,8 +89,8 @@ for _, file in ipairs(FILES_BY_TARGET[TARGET]) do
   end
 end
 
-if TARGET == "computer" and not fs.exists("data") then
-  fs.makeDir("data")
+if TARGET == "computer" and not fs.exists(DEST .. "/data") then
+  fs.makeDir(DEST .. "/data")
   print("  data/ ... ok")
 end
 
