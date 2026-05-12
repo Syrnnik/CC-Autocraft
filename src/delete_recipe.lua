@@ -1,5 +1,5 @@
-local Logger  = require("lib.logger")
-local Screen  = require("lib.screen")
+local Logger = require("lib.logger")
+local Screen = require("lib.screen")
 local Recipes = require("lib.recipes")
 
 Screen.clearAndReset()

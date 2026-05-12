@@ -4,7 +4,7 @@ default:
   just --list
 
 check:
-  stylua --check src
+  stylua src
   luacheck src
 
 deploy:

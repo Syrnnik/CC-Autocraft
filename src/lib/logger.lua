@@ -7,7 +7,6 @@ local textColorDebug = Config.TEXT_COLOR_DEBUG
 local textColorInfo = Config.TEXT_COLOR_INFO
 local textColorWarn = Config.TEXT_COLOR_WARN
 local textColorSuccess = Config.TEXT_COLOR_SUCCESS
-local bgColorError = Config.BG_COLOR_ERROR
 local textColorError = Config.TEXT_COLOR_ERROR
 
 local function valueToString(value)
