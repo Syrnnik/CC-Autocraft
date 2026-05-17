@@ -4,7 +4,7 @@ A [CC: Tweaked](https://tweaked.cc/) Lua program for automated multi-level craft
 
 ## What it does
 
-You run `craft` on a computer, enter an item name and how many you need — the program figures out the full recipe chain, crafts all the intermediate items it can (using what's already in storage), and delivers the result to the item vault.
+A touch-screen monitor UI lets you browse saved recipes, manage stock, and kick off crafting jobs with a count selector. The program figures out the full recipe chain, crafts all intermediate items it can (using what's already in storage), and delivers the result to the item vault.
 
 **Example:** ask for 4 `oak_fence_gate` → the program automatically crafts the planks and sticks it needs, then crafts the fence gates.
 
@@ -14,17 +14,23 @@ Items with no recipe (raw materials like logs, ores, etc.) must already be prese
 
 1. **Planning** — builds an ordered craft plan by walking the recipe tree bottom-up, using stock where available and scheduling crafts only for what's missing.
 2. **Validation** — simulates the plan against current stock and reports all missing items at once if anything is short.
-3. **Execution** — runs each craft step in order: pulls ingredients from the vault, sends them to the crafting turtle over rednet, waits for the result, returns crafted items to the vault.
+3. **Execution** — runs each craft step as a single batch: pushes all ingredients to the crafting turtle at once (or to the target machine), waits for the result, returns crafted items to the vault.
 
-### Components
+Two recipe types are supported:
+- **Crafter** — standard shaped/shapeless recipes processed by a crafting turtle.
+- **Machine** — items are pushed to one or more machine peripherals; the program waits for the result to appear and pulls it back.
+
+## Components
 
 | File | Runs on | Role |
 |------|---------|------|
-| `craft.lua` | Computer | Entry point: input item + count, start crafting |
+| `monitor.lua` | Computer | Main entry point: launches the touch-screen UI |
 | `crafter.lua` | Turtle | Listens on rednet, calls `turtle.craft()` on demand |
-| `new_craft.lua` | Computer | Record a new recipe by placing items in the interface |
-| `all_recipes.lua` | Computer | List all saved recipes |
-| `get_recipe.lua` | Computer | Show details of a single recipe |
+| `craft.lua` | Computer | CLI alternative: enter item name and count in terminal |
+| `new_craft.lua` | Computer | CLI alternative: record a new crafter recipe via terminal |
+| `all_recipes.lua` | Computer | CLI: list all saved recipes |
+| `get_recipe.lua` | Computer | CLI: show details of a single recipe |
+| `delete_recipe.lua` | Computer | CLI: delete a recipe by name |
 
 ## Config
 
@@ -34,16 +40,18 @@ All settings are in `src/lib/config.lua`.
 |---------|---------|-------------|
 | `IS_DEBUG_MODE` | `false` | Enable verbose debug logging |
 | `STOCK_NAME` | `"create:item_vault_1"` | Peripheral name of the item vault |
-| `NEW_RECIPE_INTERFACE_NAME` | `"minecraft:barrel_0"` | Peripheral name of the interface used to record new recipes |
+| `NEW_RECIPE_INTERFACE_NAME` | `"minecraft:barrel_0"` | Peripheral used to record new recipes |
 | `CRAFTER_NAME` | `"turtle_2"` | Peripheral name of the crafting turtle |
 | `CRAFTER_NETWORK_ID` | `5` | Rednet ID of the crafting turtle |
+| `MONITOR_NAME` | `"monitor_1"` | Peripheral name of the touch-screen monitor |
+| `MONITOR_TEXT_SCALE` | `1.0` | Text scale for the monitor |
+| `CRAFT_TIMEOUT` | `30` | Seconds to wait for the turtle before giving up |
+| `MACHINE_CRAFT_TIMEOUT` | `30` | Seconds to wait for a machine recipe to complete |
+| `CLEAR_CRAFTER_BEFORE_CRAFT` | `true` | Pull leftover items from the turtle before each craft |
 | `PATTERN_SIZE` | `3` | Recipe grid size (3 for a standard 3×3 grid) |
-| `CRAFTER_ROW_SIZE` | `4` | Row size of the turtle inventory (always 4) |
 | `NEW_RECIPE_INTERFACE_ROW_SIZE` | `9` | Row size of the recipe recording interface |
 | `PATTERN_START` | `4` | First slot of the recipe pattern in the interface |
-| `RECIPES_PATH` | `"data/recipes.json"` | Path where recipes are saved on disk |
-| `CRAFT_TIMEOUT` | `30` | Seconds to wait for the turtle to respond before giving up |
-| `CLEAR_CRAFTER_BEFORE_CRAFT` | `true` | Pull any leftover items from the turtle before each craft (safe but slower; disable if crafting speed matters and the turtle is always clean) |
+| `RECIPES_PATH` | `"data/recipes.json"` | Path where recipes are stored on disk |
 
 ## Deploy
 
@@ -53,4 +61,4 @@ Copy `.env.example` to `.env` and fill in your Minecraft save paths, then:
 just deploy
 ```
 
-Requires [just](https://github.com/casey/just), [rsync](https://rsync.samba.org/).
+Requires [just](https://github.com/casey/just) and [rsync](https://rsync.samba.org/).
