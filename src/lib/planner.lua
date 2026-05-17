@@ -106,6 +106,7 @@ function Planner.validatePlan(plan, totals, maxDmg)
   for name, count in pairs(missingByName) do
     table.insert(missing, { name = name, count = count })
   end
+  table.sort(missing, function(a, b) return a.name < b.name end)
 
   return missing
 end
