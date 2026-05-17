@@ -94,17 +94,20 @@ end
 function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot)
   local toInterface = peripheral.wrap(toInterfaceName)
 
-  local craftedItem, slot
-  if isSpecificSlot then
-    slot = Crafting.getSlotToPutItem()
-  else
-    slot = nil
-  end
-
   Logger.printInfo(
     string.format("Getting crafted item from '%s'", toInterfaceName)
   )
-  local count = toInterface.pullItems(crafterName, 1, nil, slot)
+
+  if not isSpecificSlot then
+    -- Pull everything from all crafter slots (batch craft fills multiple slots)
+    for slot = 1, 16 do
+      toInterface.pullItems(crafterName, slot)
+    end
+    return
+  end
+
+  local destSlot = Crafting.getSlotToPutItem()
+  local count = toInterface.pullItems(crafterName, 1, nil, destSlot)
   if count == 0 then
     Logger.raiseError(
       string.format(
@@ -115,11 +118,7 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot)
     )
   end
 
-  if not slot then
-    return
-  end
-
-  craftedItem = toInterface.getItemDetail(slot)
+  local craftedItem = toInterface.getItemDetail(destSlot)
   Logger.printSuccess(
     string.format("Crafted '%s' x%d", craftedItem.name, craftedItem.count)
   )
@@ -363,7 +362,9 @@ function Crafting.processNewCraft()
   end
 end
 
-function Crafting.processCraft(recipe)
+-- batchSize: craft batchSize recipe iterations in a single crafter call.
+function Crafting.processCraft(recipe, batchSize)
+  batchSize = batchSize or 1
   local recipeItem = recipe.name
   local recipeCount = recipe.count
   local recipeType = recipe.type or "crafter"
@@ -371,9 +372,10 @@ function Crafting.processCraft(recipe)
 
   Logger.printInfo(
     string.format(
-      "Crafting '%s' x%d [%s:%s]",
+      "Crafting '%s' x%d (batch %d) [%s:%s]",
       recipeItem,
       recipeCount,
+      batchSize,
       recipeType,
       processor
     )
@@ -382,18 +384,19 @@ function Crafting.processCraft(recipe)
   if recipeType == "machine" then
     Crafting.craftMachine(recipe)
   else
-    local stockItems = Stock.getItemsForRecipe(recipe)
+    local stockItems = Stock.getItemsForRecipe(recipe, batchSize)
     Crafting.craft(stockItems, stockName)
     Crafting.getCraftedItem(stockName, false)
   end
 
   Logger.printSuccess(
-    string.format("Crafted '%s' x%d", recipeItem, recipeCount)
+    string.format("Crafted '%s' x%d", recipeItem, recipeCount * batchSize)
   )
 end
 
 -- Entry point for multi-level crafting: builds a plan and executes it in order.
-function Crafting.craftItem(recipeName, count)
+-- onStep(current, total) is called after each plan step completes (optional).
+function Crafting.craftItem(recipeName, count, onStep)
   Logger.printInfo(string.format("Planning '%s' x%d..", recipeName, count))
 
   local totals, maxDmg = Stock.getDurabilityAwareTotals()
@@ -407,20 +410,21 @@ function Crafting.craftItem(recipeName, count)
 
   local missing = Planner.validatePlan(plan, totals, maxDmg)
   if #missing > 0 then
-    Logger.printError("Missing items:")
-    for _, item in pairs(missing) do
-      Logger.printError(string.format("  - '%s' x%d", item.name, item.count))
+    local lines = { "Missing items:" }
+    for _, item in ipairs(missing) do
+      local display = item.name:match("^[^:]+:(.+)") or item.name
+      table.insert(lines, "- " .. display .. " x" .. item.count)
     end
-    Logger.raiseError()
+    error(table.concat(lines, "\n"), 0)
   end
 
-  for _, step in ipairs(plan) do
+  for i, step in ipairs(plan) do
     Logger.printInfo(
-      string.format("Crafting '%s' x%d craft(s)..", step.name, step.craftsCount)
+      string.format("Crafting '%s' x%d craft(s) as one batch..", step.name, step.craftsCount)
     )
-    for _ = 1, step.craftsCount do
-      Crafting.processCraft(step.recipe)
-    end
+    -- Pass craftsCount as batchSize so all iterations happen in a single craft call
+    Crafting.processCraft(step.recipe, step.craftsCount)
+    if onStep then onStep(i, #plan) end
   end
 
   Logger.printSuccess(

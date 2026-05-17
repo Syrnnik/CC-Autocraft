@@ -2,5 +2,7 @@
 .env
 src/data/
 
+.vscode/
+
 .codex/
 .claude/

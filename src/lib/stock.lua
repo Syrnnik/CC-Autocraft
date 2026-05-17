@@ -64,9 +64,17 @@ function Stock.getMissingItems(items)
   return stockItems, missingItems
 end
 
-function Stock.getItemsForRecipe(recipe)
+-- batchSize: how many times to replicate the recipe in one craft call.
+-- Multiplies each slot's item count so the turtle crafts batchSize results at once.
+function Stock.getItemsForRecipe(recipe, batchSize)
+  batchSize = batchSize or 1
   local requiredItems = Recipes.getRequiredItemsPlainList(recipe)
-  local _, missingItems = Stock.getMissingItems(requiredItems)
+  -- Scale totals check to full batch amount
+  local scaledItems = {}
+  for _, item in pairs(requiredItems) do
+    table.insert(scaledItems, { name = item.name, count = item.count * batchSize })
+  end
+  local _, missingItems = Stock.getMissingItems(scaledItems)
   if #missingItems > 0 then
     Logger.raiseError("Not enough items for craft")
   end
@@ -87,7 +95,7 @@ function Stock.getItemsForRecipe(recipe)
   local pushList = {}
   for _, recipeItem in pairs(recipe.items) do
     local name = recipeItem.name
-    local needed = recipeItem.count
+    local needed = recipeItem.count * batchSize
     local slots = slotsByName[name] or {}
 
     local assigned = false
@@ -107,7 +115,7 @@ function Stock.getItemsForRecipe(recipe)
 
     if not assigned then
       Logger.raiseError(
-        string.format("Not enough '%s' in a single stock slot", name)
+        string.format("Not enough '%s' in a single stock slot for batch", name)
       )
     end
   end
