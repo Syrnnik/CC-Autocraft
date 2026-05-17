@@ -53,6 +53,22 @@ All settings are in `src/lib/config.lua`.
 | `PATTERN_START` | `4` | First slot of the recipe pattern in the interface |
 | `RECIPES_PATH` | `"data/recipes.json"` | Path where recipes are stored on disk |
 
+## Installation (in-game)
+
+On the **computer** (the one with the monitor):
+
+```
+wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua computer
+```
+
+On the **crafting turtle**:
+
+```
+wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua crafter
+```
+
+Both commands download all required files into an `autocraft/` directory. After installing, edit `autocraft/lib/config.lua` on each device to match your peripheral names and network IDs, then run `autocraft/monitor` on the computer and `autocraft/crafter` on the turtle.
+
 ## Deploy
 
 Copy `.env.example` to `.env` and fill in your Minecraft save paths, then:
