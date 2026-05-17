@@ -14,11 +14,9 @@ local state = {
   tab = "recipes",
   page = 1,
   recipes = {}, -- { name, count }
-  selected = nil,
-  craftCount = 1,
-  msg = nil,
-  msgIsErr = false,
-  pendingRecipe = nil, -- { items, craftedItem, name, alreadyExists }
+  mods = {}, -- sorted list of mod prefixes found in recipes
+  modTab = "all", -- currently selected mod filter ("all" or mod name)
+  modTabOffset = 0, -- scroll offset for mod tabs (index of first visible tab - 1)
   deleteTarget = nil, -- recipe name pending deletion
   editTarget = nil, -- recipe name being edited (display hint)
   stockItems = {}, -- { name, count } sorted by name
@@ -30,13 +28,31 @@ local state = {
   selectedItemIdx = nil, -- index in machineItems for inline machine picker
   resultProcessor = nil, -- machine to pull result from
   resultPickerOpen = false,
+  -- new_recipe tab state
+  msg = nil,
+  msgIsErr = false,
+  pendingRecipe = nil,
+  -- craft screen state
+  craftItem = nil, -- full item name being crafted
+  craftCount = 1,
+  craftMsg = nil,
+  craftMsgIsErr = false,
+  craftProgress = 0, -- 0-100
 }
 
 local L = 2 -- left margin
-local HEADER_H = 5 -- pixel-art header height
-local SEP_ROW = HEADER_H + 1 -- 6  decorative separator
-local TABS_ROW = HEADER_H + 2 -- 7
-local BODY_ROW = TABS_ROW + 1 -- 8  (first content row)
+local TABS_ROW = 1
+local BODY_ROW = TABS_ROW + 1 -- 2  (first content row)
+
+-- ── Mod helpers ────────────────────────────────────────────
+
+local function getMod(name)
+  return name:match("^([^:]+):") or "other"
+end
+
+local function stripMod(name)
+  return name:match("^[^:]+:(.+)") or name
+end
 
 -- ── Drawing primitives ──────────────────────────────────────
 
@@ -72,64 +88,86 @@ local function truncate(s, maxLen)
   return s:sub(1, maxLen - 3) .. "..."
 end
 
+-- ── Shared item table ───────────────────────────────────────
+-- Draws a paginated two-column table (ITEM | COUNT) with alternating rows.
+-- opts fields:
+--   topY        : first row (header)
+--   items       : list of { name, count }
+--   page        : current page number
+--   setPage     : function(p) — updates page state
+--   displayName : function(name) -> display string (default: identity)
+--   rightW      : chars reserved right of the name (gap + count + any buttons)
+--   emptyMsg    : shown when items is empty
+--   drawActions : optional function(item, row, rowBg, xCount)
+local function drawItemTable(opts)
+  local headerY  = opts.topY
+  local listStart = opts.topY + 1
+  local paginationY = H
+  local listH = paginationY - listStart
+  local items = opts.items
+  local displayName = opts.displayName or function(n) return n end
+  local rightW = opts.rightW or 9
+
+  local maxNameLen = 0
+  for _, item in ipairs(items) do
+    local dn = displayName(item.name)
+    if #dn > maxNameLen then maxNameLen = #dn end
+  end
+  local itemW = math.max(0, math.min(maxNameLen, W - L - rightW))
+  local xCount = L + itemW + 1
+
+  fill(headerY, colors.gray)
+  at(xCount - #"ITEM" - 1, headerY, "ITEM", colors.lightGray, colors.gray)
+  at(xCount, headerY, "COUNT", colors.lightGray, colors.gray)
+
+  local total = #items
+  local totalPages = math.max(1, math.ceil(total / listH))
+  local page = math.min(opts.page, totalPages)
+  opts.setPage(page)
+
+  local startIdx = (page - 1) * listH + 1
+  local endIdx = math.min(startIdx + listH - 1, total)
+
+  if total == 0 then
+    at(L, listStart + 1, opts.emptyMsg or "No items", colors.gray, colors.black)
+  else
+    for i = startIdx, endIdx do
+      local item = items[i]
+      local row = listStart + (i - startIdx)
+      local rowBg = (((i - startIdx) % 2) == 0) and colors.black or colors.gray
+
+      fill(row, rowBg)
+
+      local dn = truncate(displayName(item.name), itemW)
+      at(math.max(L, xCount - #dn - 1), row, dn, colors.lightGray, rowBg)
+      at(xCount, row, "x" .. item.count, colors.yellow, rowBg)
+
+      if opts.drawActions then
+        opts.drawActions(item, row, rowBg, xCount)
+      end
+    end
+  end
+
+  fill(paginationY, colors.yellow)
+  if totalPages > 1 then
+    local pageText = page .. " / " .. totalPages
+    at(L, paginationY, pageText, colors.black, colors.yellow)
+    local btnX = L + #pageText + 1
+    mkBtn(btnX, paginationY, "^", colors.black, colors.orange, function()
+      if page > 1 then opts.setPage(page - 1) end
+    end)
+    mkBtn(btnX + 5, paginationY, "v", colors.black, colors.orange, function()
+      if page < totalPages then opts.setPage(page + 1) end
+    end)
+  end
+end
+
 local reloadRecipes
 local reloadStock
 local reloadMachines
 local reloadMachineItems
 
 -- ── Sections ───────────────────────────────────────────────
-
-local function drawHeader()
-  -- Pixel-art "SyrOS". Each pixel = 2 chars wide. Black background.
-  -- '#' = on (yellow), '.' = off (black).
-  local font = {
-    S = { ".###", "#...", ".##.", "...#", "###." },
-    y = { "#..#", "#..#", ".###", "...#", ".##." },
-    r = { ".##", "#.#", "#..", "#..", "#.." },
-    O = { ".###.", "#...#", "#...#", "#...#", ".###." },
-  }
-  local chars = { "S", "y", "r", "O", "S" }
-  local pixW = 2 -- pixels per cell (horizontal)
-  local gap = 2 -- chars between characters
-
-  -- Compute total rendered width for centering
-  local totalW = 0
-  for i, ch in ipairs(chars) do
-    totalW = totalW + #font[ch][1] * pixW
-    if i < #chars then
-      totalW = totalW + gap
-    end
-  end
-
-  local startX = math.floor((W - totalW) / 2) + 1
-
-  for row = 1, HEADER_H do
-    fill(row, colors.black)
-  end
-
-  local x = startX
-  for _, ch in ipairs(chars) do
-    local bitmap = font[ch]
-    local charW = #bitmap[1]
-    for row = 1, HEADER_H do
-      local pattern = bitmap[row]
-      for col = 1, charW do
-        if pattern:sub(col, col) == "#" then
-          at(x + (col - 1) * pixW, row, "  ", colors.black, colors.yellow)
-        end
-      end
-    end
-    x = x + charW * pixW + gap
-  end
-end
-
-local function drawSeparator()
-  fill(SEP_ROW, colors.black)
-  mon.setCursorPos(1, SEP_ROW)
-  mon.setBackgroundColor(colors.black)
-  mon.setTextColor(colors.yellow)
-  mon.write(string.rep("-", W))
-end
 
 local function drawTabs()
   fill(TABS_ROW, colors.black)
@@ -143,6 +181,7 @@ local function drawTabs()
 
   for _, tab in ipairs(tabs) do
     local active = state.tab == tab.id
+      or (tab.id == "recipes" and state.tab == "craft")
     at(
       x,
       TABS_ROW,
@@ -158,12 +197,10 @@ local function drawTabs()
       fn = function()
         if tab.id == "recipes" then
           state.tab = "recipes"
-          state.selected = nil
-          state.msg = nil
           state.page = 1
-          state.pendingRecipe = nil
           state.deleteTarget = nil
           state.editTarget = nil
+          state.craftItem = nil
         elseif tab.id == "stock" then
           state.tab = "stock"
           state.stockPage = 1
@@ -187,202 +224,191 @@ end
 -- ── Recipes tab ─────────────────────────────────────────────
 
 local function drawRecipesList()
-  local headerY = BODY_ROW
-  local listStart = BODY_ROW + 1
+  local modTabsY = BODY_ROW
+  local headerY  = BODY_ROW + 1
+  local listStart = BODY_ROW + 2
   local paginationY = H
   local listH = paginationY - listStart
 
-  for y = headerY, H do
+  for y = modTabsY, H do
     fill(y, colors.black)
   end
 
-  -- Column layout derived from the longest recipe name.
-  --
-  -- Right zone (fixed widths, left-to-right):
-  --   count col  : 6 chars  (xCount .. xCount+5)
-  --   [ Craft ]  : 7 chars  + 1 gap = 8
-  --   [ Edit ]   : 6 chars  + 1 gap = 7
-  --   [ Del ]    : 5 chars  (flush right)
-  -- Total right  : 6 + 8 + 7 + 5 = 26 chars
-  -- Gap name→count: 1
-  -- itemW = min(longest name, W - L - 27)
-  --
-  -- Inline controls (25 chars, xCraft .. xCraft+24):
-  --   <<<  sp  <<  sp  <  sp  CCC  sp  >  sp  >>  sp  >>>  sp   X
-  --    3   1    2   1   1   1   3   1   1   1   2   1    3   1  [3]
+  -- Mod sub-tabs row.
+  -- "All" is always pinned at the left. Scroll buttons < > control which
+  -- mod-specific tabs are visible; they scroll freely regardless of active tab.
+  do
+    -- Draw fixed "All" tab
+    local allActive = state.modTab == "all"
+    at(L, modTabsY, "All",
+       allActive and colors.black or colors.gray,
+       allActive and colors.yellow or colors.black)
+    table.insert(buttons, {
+      x1 = L, x2 = L + 2, y = modTabsY,
+      fn = function()
+        state.modTab = "all"
+        state.modTabOffset = 0
+        state.page = 1
+      end,
+    })
 
-  local maxNameLen = 0
-  for _, r in ipairs(state.recipes) do
-    if #r.name > maxNameLen then
-      maxNameLen = #r.name
+    if #state.mods > 0 then
+      -- Layout: "All" ends at L+2. Gap at L+3.
+      -- Scroll buttons (when needed): "<" at L+4, gap, mods from L+6 to W-2, gap, ">" at W.
+      -- No scroll: mods from L+4 to W.
+      local scrollL = L + 4  -- x of "<" button
+      local modsNoScroll = L + 4  -- mods start when no scroll
+      local modsWithScroll = L + 6  -- mods start when scroll present (after "< ")
+
+      -- Compute total mods width
+      local totalModW = 0
+      for i, mod in ipairs(state.mods) do
+        totalModW = totalModW + #mod + (i > 1 and 1 or 0)
+      end
+
+      local spaceNoScroll = W - modsNoScroll + 1
+      local needsScroll = totalModW > spaceNoScroll
+      local modsStart = needsScroll and modsWithScroll or modsNoScroll
+      local modsEnd = needsScroll and (W - 2) or W
+      local spaceForMods = modsEnd - modsStart + 1
+
+      -- Clamp offset so we never scroll past the last mod
+      state.modTabOffset = math.max(0, state.modTabOffset)
+
+      -- Find last visible mod index from current offset
+      local function calcLastVisible(offset)
+        local used = 0
+        local last = offset
+        for i = offset + 1, #state.mods do
+          local w = #state.mods[i] + (used > 0 and 1 or 0)
+          if used + w > spaceForMods then break end
+          used = used + w
+          last = i
+        end
+        return last
+      end
+
+      local lastVisibleIdx = calcLastVisible(state.modTabOffset)
+      -- If nothing visible, clamp offset back
+      if lastVisibleIdx == state.modTabOffset and state.modTabOffset > 0 then
+        state.modTabOffset = math.max(0, state.modTabOffset - 1)
+        lastVisibleIdx = calcLastVisible(state.modTabOffset)
+      end
+
+      -- Page-based scroll: < goes to the previous full page of mods, > to the next.
+      -- ">" sets offset = lastVisibleIdx (first mod of next page).
+      -- "<" finds the largest page-start offset O < current such that calcLastVisible(O) == current offset.
+      local function prevPageOffset()
+        local prevO = 0
+        local o = 0
+        while true do
+          local lv = calcLastVisible(o)
+          local nextO = lv
+          if nextO >= state.modTabOffset then break end
+          prevO = o
+          o = nextO
+        end
+        return prevO
+      end
+
+      if needsScroll then
+        local canLeft = state.modTabOffset > 0
+        at(scrollL, modTabsY, "<",
+           canLeft and colors.white or colors.gray, colors.black)
+        if canLeft then
+          table.insert(buttons, {
+            x1 = scrollL, x2 = scrollL, y = modTabsY,
+            fn = function() state.modTabOffset = prevPageOffset() end,
+          })
+        end
+      end
+
+      -- Draw visible mod tabs
+      local x = modsStart
+      for i = state.modTabOffset + 1, lastVisibleIdx do
+        local mod = state.mods[i]
+        local active = state.modTab == mod
+        at(x, modTabsY, mod,
+           active and colors.black or colors.gray,
+           active and colors.yellow or colors.black)
+        local x1, x2 = x, x + #mod - 1
+        local captId = mod
+        table.insert(buttons, {
+          x1 = x1, x2 = x2, y = modTabsY,
+          fn = function()
+            state.modTab = captId
+            state.page = 1
+          end,
+        })
+        x = x + #mod + 1
+      end
+
+      if needsScroll then
+        local canRight = lastVisibleIdx < #state.mods
+        at(W, modTabsY, ">",
+           canRight and colors.white or colors.gray, colors.black)
+        if canRight then
+          table.insert(buttons, {
+            x1 = W, x2 = W, y = modTabsY,
+            -- Jump to next page: first mod after current last visible
+            fn = function() state.modTabOffset = lastVisibleIdx end,
+          })
+        end
+      end
     end
   end
-  local itemW = math.max(0, math.min(maxNameLen, W - L - 27))
-  local xCount = L + itemW + 1
-  local xCraft = xCount + 6
-  local xEdit = xCraft + 8
-  local xDel = xEdit + 7
 
-  -- Header row: gray bg normally; replaced by status message when crafting
-  if state.msg then
-    local fg = state.msgIsErr and colors.red or colors.yellow
-    fill(headerY, colors.black)
-    at(L, headerY, truncate(state.msg, W - L), fg, colors.black)
-  else
-    fill(headerY, colors.gray)
-    at(xCount - #"ITEM" - 1, headerY, "ITEM", colors.lightGray, colors.gray)
-    at(xCount, headerY, "COUNT", colors.lightGray, colors.gray)
+  -- Build filtered list
+  local filtered = {}
+  for _, r in ipairs(state.recipes) do
+    if state.modTab == "all" or getMod(r.name) == state.modTab then
+      table.insert(filtered, r)
+    end
   end
 
-  local total = #state.recipes
-  local totalPages = math.max(1, math.ceil(total / listH))
-  state.page = math.min(state.page, totalPages)
-
-  local startIdx = (state.page - 1) * listH + 1
-  local endIdx = math.min(startIdx + listH - 1, total)
-
-  if total == 0 then
-    at(L, listStart + 1, "No recipes yet", colors.gray, colors.black)
-  else
-    for i = startIdx, endIdx do
-      local recipe = state.recipes[i]
-      local row = listStart + (i - startIdx)
-      local captured = recipe.name
-
-      local name = truncate(recipe.name, itemW)
-      at(
-        math.max(L, xCount - #name - 1),
-        row,
-        name,
-        colors.lightGray,
-        colors.black
-      )
-      at(xCount, row, "x" .. recipe.count, colors.yellow, colors.black)
-
+  -- Right zone: 1 gap + 6 count + 8 Craft + 7 Edit + 5 Del = 27
+  drawItemTable({
+    topY        = headerY,
+    items       = filtered,
+    page        = state.page,
+    setPage     = function(p) state.page = p end,
+    displayName = stripMod,
+    rightW      = 27,
+    emptyMsg    = "No recipes yet",
+    drawActions = function(item, row, rowBg, xCount)
+      local xCraft = xCount + 6
+      local xEdit  = xCraft + 8
+      local xDel   = xEdit + 7
+      local captured = item.name
       if captured == state.deleteTarget then
         mkBtn(xCraft, row, "Delete", colors.white, colors.red, function()
-          local ok, err = pcall(Recipes.deleteRecipe, captured)
-          if ok then
-            state.deleteTarget = nil
-            state.msg = nil
-          else
-            state.msg = tostring(err)
-            state.msgIsErr = true
-            state.deleteTarget = nil
-          end
+          pcall(Recipes.deleteRecipe, captured)
+          state.deleteTarget = nil
           reloadRecipes()
         end)
         mkBtn(xCraft + 10, row, "Cancel", colors.white, colors.gray, function()
           state.deleteTarget = nil
         end)
-      elseif captured == state.selected then
-        -- Inline controls (25 chars, starting at xCraft or pulled left to fit).
-        --
-        --  +0  <<<  (3)   +3  sp
-        --  +4  <<   (2)   +6  sp
-        --  +7  <    (1)   +8  sp
-        --  +9  CCC  (3, yellow = craft confirm)  +12 sp
-        --  +13 >    (1)   +14 sp
-        --  +15 >>   (2)   +17 sp
-        --  +18 >>>  (3)   +21 sp
-        --  +22 " X "  (3)
-        local xb = math.min(xCraft, W - 24)
-        local cnt = state.craftCount
-
-        mkBtnTight(xb, row, "<<<", colors.lightGray, colors.gray, function()
-          state.craftCount = math.max(1, state.craftCount - 100)
-        end)
-        mkBtnTight(xb + 4, row, "<<", colors.lightGray, colors.gray, function()
-          state.craftCount = math.max(1, state.craftCount - 10)
-        end)
-        mkBtnTight(xb + 7, row, "<", colors.lightGray, colors.gray, function()
-          state.craftCount = math.max(1, state.craftCount - 1)
-        end)
-
-        at(xb + 9, row, string.format("%3d", cnt), colors.black, colors.yellow)
-        local craftName = captured
-        local craftCount = cnt
-        table.insert(buttons, {
-          x1 = xb + 9,
-          x2 = xb + 11,
-          y = row,
-          fn = function()
-            state.msg = "Crafting " .. craftName .. " x" .. craftCount .. "..."
-            state.msgIsErr = false
-            pendingTask = function()
-              local ok, err = pcall(Crafting.craftItem, craftName, craftCount)
-              if ok then
-                state.selected = nil
-                state.craftCount = 1
-                state.msg = nil
-              else
-                state.msg = tostring(err)
-                state.msgIsErr = true
-              end
-              reloadRecipes()
-            end
-          end,
-        })
-
-        mkBtnTight(xb + 13, row, ">", colors.lightGray, colors.gray, function()
-          state.craftCount = state.craftCount + 1
-        end)
-        mkBtnTight(xb + 15, row, ">>", colors.lightGray, colors.gray, function()
-          state.craftCount = state.craftCount + 10
-        end)
-        mkBtnTight(
-          xb + 18,
-          row,
-          ">>>",
-          colors.lightGray,
-          colors.gray,
-          function()
-            state.craftCount = state.craftCount + 100
-          end
-        )
-
-        mkBtn(xb + 22, row, "X", colors.white, colors.red, function()
-          state.selected = nil
-          state.craftCount = 1
-          state.msg = nil
-        end)
       else
         mkBtn(xCraft, row, "Craft", colors.black, colors.yellow, function()
-          state.selected = captured
+          state.craftItem = captured
           state.craftCount = 1
-          state.msg = nil
+          state.craftMsg = nil
+          state.craftMsgIsErr = false
+          state.craftProgress = 0
+          state.tab = "craft"
         end)
-        mkBtn(xEdit, row, "Edit", colors.white, colors.gray, function()
+        mkBtn(xEdit, row, "Edit", colors.lightGray, colors.gray, function()
           state.tab = "new_recipe"
           state.editTarget = captured
-          state.msg = nil
           state.pendingRecipe = nil
         end)
-        mkBtn(xDel, row, "Del", colors.white, colors.red, function()
+        mkBtn(xDel, row, "Del", colors.black, colors.red, function()
           state.deleteTarget = captured
-          state.msg = nil
         end)
       end
-    end
-  end
-
-  -- Pagination row: yellow background
-  fill(paginationY, colors.yellow)
-  if totalPages > 1 then
-    local pageText = state.page .. " / " .. totalPages
-    at(L, paginationY, pageText, colors.black, colors.yellow)
-    local btnX = L + #pageText + 1
-    mkBtn(btnX, paginationY, "^", colors.black, colors.orange, function()
-      if state.page > 1 then
-        state.page = state.page - 1
-      end
-    end)
-    mkBtn(btnX + 5, paginationY, "v", colors.black, colors.orange, function()
-      if state.page < totalPages then
-        state.page = state.page + 1
-      end
-    end)
-  end
+    end,
+  })
 end
 
 -- ── +RECIPE tab ─────────────────────────────────────────────
@@ -785,73 +811,113 @@ local function drawNewRecipe()
   end)
 end
 
--- ── Stock tab ───────────────────────────────────────────────
+-- ── Craft screen ────────────────────────────────────────────
 
-local function drawStockList()
-  local headerY = BODY_ROW
-  local listStart = BODY_ROW + 1
-  local paginationY = H
-  local listH = paginationY - listStart
-
-  for y = headerY, H do
+local function drawCraftScreen()
+  for y = BODY_ROW, H do
     fill(y, colors.black)
   end
 
-  -- Dynamic name width; count zone = 8 chars ("x999999" + 1 gap)
-  local maxNameLen = 0
-  for _, item in ipairs(state.stockItems) do
-    if #item.name > maxNameLen then
-      maxNameLen = #item.name
-    end
-  end
-  local itemW = math.max(0, math.min(maxNameLen, W - L - 9))
-  local xCount = L + itemW + 1
+  -- Header row: item name only (user navigates back via RECIPES tab)
+  fill(BODY_ROW, colors.gray)
+  local itemLabel = state.craftItem or ""
+  at(L, BODY_ROW, truncate(itemLabel, W - L), colors.white, colors.gray)
 
-  fill(headerY, colors.gray)
-  at(xCount - #"ITEM" - 1, headerY, "ITEM", colors.lightGray, colors.gray)
-  at(xCount, headerY, "COUNT", colors.lightGray, colors.gray)
+  local cur = BODY_ROW + 2
 
-  local total = #state.stockItems
-  local totalPages = math.max(1, math.ceil(total / listH))
-  state.stockPage = math.min(state.stockPage, totalPages)
+  -- Count selector: Amount: -100 -10 -1 [  N] +1 +10 +100  (no padding on buttons)
+  at(L, cur, "Amount:", colors.lightGray, colors.black)
+  local xb = L + 9
+  local cnt = state.craftCount
 
-  local startIdx = (state.stockPage - 1) * listH + 1
-  local endIdx = math.min(startIdx + listH - 1, total)
-
-  if total == 0 then
-    at(L, listStart + 1, "Stock is empty", colors.gray, colors.black)
-  else
-    for i = startIdx, endIdx do
-      local item = state.stockItems[i]
-      local row = listStart + (i - startIdx)
-      local name = truncate(item.name, itemW)
-      at(
-        math.max(L, xCount - #name - 1),
-        row,
-        name,
-        colors.lightGray,
-        colors.black
-      )
-      at(xCount, row, "x" .. item.count, colors.yellow, colors.black)
+  -- For +N: if count=1 and N>1, set to N instead of N+1 (so 1+10=10, not 11).
+  -- For +1: always just add 1.
+  local function addCount(delta)
+    if delta > 1 and state.craftCount == 1 then
+      state.craftCount = delta
+    else
+      state.craftCount = math.max(1, state.craftCount + delta)
     end
   end
 
-  fill(paginationY, colors.yellow)
-  if totalPages > 1 then
-    local pageText = state.stockPage .. " / " .. totalPages
-    at(L, paginationY, pageText, colors.black, colors.yellow)
-    local btnX = L + #pageText + 1
-    mkBtn(btnX, paginationY, "^", colors.black, colors.orange, function()
-      if state.stockPage > 1 then
-        state.stockPage = state.stockPage - 1
+  mkBtnTight(xb,      cur, "-100", colors.lightGray, colors.gray, function() addCount(-100) end)
+  mkBtnTight(xb + 5,  cur, "-10",  colors.lightGray, colors.gray, function() addCount(-10)  end)
+  mkBtnTight(xb + 9,  cur, "-1",   colors.lightGray, colors.gray, function() addCount(-1)   end)
+  at(xb + 12, cur, string.format("%4d", cnt), colors.black, colors.yellow)
+  mkBtnTight(xb + 17, cur, "+1",   colors.lightGray, colors.gray, function() addCount(1)    end)
+  mkBtnTight(xb + 20, cur, "+10",  colors.lightGray, colors.gray, function() addCount(10)   end)
+  mkBtnTight(xb + 24, cur, "+100", colors.lightGray, colors.gray, function() addCount(100)  end)
+
+  cur = cur + 2
+
+  -- Craft button (always active — user can re-craft immediately)
+  mkBtn(L, cur, "Craft", colors.black, colors.cyan, function()
+    local name = state.craftItem
+    local count = state.craftCount
+    state.craftMsg = "Crafting " .. stripMod(name) .. " x" .. count .. "..."
+    state.craftMsgIsErr = false
+    state.craftProgress = 0
+    pendingTask = function(redraw)
+      local ok, err = pcall(Crafting.craftItem, name, count, function(i, total)
+        state.craftProgress = math.floor(i / total * 100)
+        if redraw then redraw() end
+      end)
+      if ok then
+        state.craftMsg = "Done! " .. stripMod(name) .. " x" .. count
+        state.craftMsgIsErr = false
+        state.craftProgress = 100
+      else
+        state.craftMsg = tostring(err)
+        state.craftMsgIsErr = true
+        state.craftProgress = 0
       end
-    end)
-    mkBtn(btnX + 5, paginationY, "v", colors.black, colors.orange, function()
-      if state.stockPage < totalPages then
-        state.stockPage = state.stockPage + 1
+      reloadRecipes()
+    end
+  end)
+
+  -- Message area: first line in red for errors, rest in white; yellow for success
+  if state.craftMsg then
+    local msgRow = cur + 2
+    if state.craftMsgIsErr then
+      local lines = {}
+      for line in (state.craftMsg .. "\n"):gmatch("([^\n]*)\n") do
+        table.insert(lines, line)
       end
-    end)
+      for i, line in ipairs(lines) do
+        if msgRow + i - 1 >= H - 2 then break end
+        at(L, msgRow + i - 1, truncate(line, W - L), colors.red, colors.black)
+      end
+    else
+      at(L, msgRow, truncate(state.craftMsg, W - L), colors.yellow, colors.black)
+    end
   end
+
+  -- Progress bar one row above the bottom
+  local barRow = H - 1
+  local prefix = "Progress: "
+  local barW = W - L - #prefix
+  local filled = math.floor(state.craftProgress / 100 * barW)
+  at(L, barRow, prefix, colors.gray, colors.black)
+  at(L + #prefix, barRow, string.rep(" ", filled), colors.black, colors.lightGray)
+  at(L + #prefix + filled, barRow, string.rep(" ", barW - filled), colors.black, colors.gray)
+end
+
+-- ── Stock tab ───────────────────────────────────────────────
+
+local function drawStockList()
+  for y = BODY_ROW, H do
+    fill(y, colors.black)
+  end
+
+  drawItemTable({
+    topY        = BODY_ROW,
+    items       = state.stockItems,
+    page        = state.stockPage,
+    setPage     = function(p) state.stockPage = p end,
+    displayName = stripMod,
+    rightW      = 9,
+    emptyMsg    = "Stock is empty",
+  })
 end
 
 -- ── Full redraw ─────────────────────────────────────────────
@@ -860,11 +926,11 @@ local function drawScreen()
   buttons = {}
   mon.setBackgroundColor(colors.black)
   mon.clear()
-  drawHeader()
-  drawSeparator()
   drawTabs()
   if state.tab == "recipes" then
     drawRecipesList()
+  elseif state.tab == "craft" then
+    drawCraftScreen()
   elseif state.tab == "stock" then
     drawStockList()
   else
@@ -879,9 +945,36 @@ reloadRecipes = function()
     table.insert(list, { name = recipe.name, count = recipe.count })
   end
   table.sort(list, function(a, b)
-    return a.name < b.name
+    return stripMod(a.name) < stripMod(b.name)
   end)
   state.recipes = list
+
+  -- Recompute mod list
+  local seen = {}
+  local mods = {}
+  for _, r in ipairs(list) do
+    local mod = getMod(r.name)
+    if not seen[mod] then
+      seen[mod] = true
+      table.insert(mods, mod)
+    end
+  end
+  table.sort(mods)
+  state.mods = mods
+
+  -- Reset modTab if it no longer exists
+  if state.modTab ~= "all" then
+    local found = false
+    for _, m in ipairs(mods) do
+      if m == state.modTab then
+        found = true
+        break
+      end
+    end
+    if not found then
+      state.modTab = "all"
+    end
+  end
 end
 
 reloadStock = function()
@@ -891,7 +984,7 @@ reloadStock = function()
     table.insert(list, { name = name, count = count })
   end
   table.sort(list, function(a, b)
-    return a.name < b.name
+    return stripMod(a.name) < stripMod(b.name)
   end)
   state.stockItems = list
 end
@@ -972,7 +1065,7 @@ function UI.run(monitorName)
           if pendingTask then
             local task = pendingTask
             pendingTask = nil
-            task()
+            task(drawScreen)
             drawScreen()
           end
           break
