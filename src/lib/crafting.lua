@@ -382,7 +382,9 @@ function Crafting.processCraft(recipe, batchSize)
   )
 
   if recipeType == "machine" then
-    Crafting.craftMachine(recipe)
+    for _ = 1, batchSize do
+      Crafting.craftMachine(recipe)
+    end
   else
     local stockItems = Stock.getItemsForRecipe(recipe, batchSize)
     Crafting.craft(stockItems, stockName)
