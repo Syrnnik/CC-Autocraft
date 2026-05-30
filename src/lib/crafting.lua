@@ -363,7 +363,8 @@ function Crafting.processNewCraft()
 end
 
 -- batchSize: craft batchSize recipe iterations in a single crafter call.
-function Crafting.processCraft(recipe, batchSize)
+-- onEach(): called after each individual machine cycle, or once after a crafter batch.
+function Crafting.processCraft(recipe, batchSize, onEach)
   batchSize = batchSize or 1
   local recipeItem = recipe.name
   local recipeCount = recipe.count
@@ -384,11 +385,13 @@ function Crafting.processCraft(recipe, batchSize)
   if recipeType == "machine" then
     for _ = 1, batchSize do
       Crafting.craftMachine(recipe)
+      if onEach then onEach() end
     end
   else
     local stockItems = Stock.getItemsForRecipe(recipe, batchSize)
     Crafting.craft(stockItems, stockName)
     Crafting.getCraftedItem(stockName, false)
+    if onEach then onEach() end
   end
 
   Logger.printSuccess(
@@ -397,8 +400,10 @@ function Crafting.processCraft(recipe, batchSize)
 end
 
 -- Entry point for multi-level crafting: builds a plan and executes it in order.
--- onStep(current, total) is called after each plan step completes (optional).
-function Crafting.craftItem(recipeName, count, onStep)
+-- onStep(current, total): called after each individual craft run (per machine cycle or crafter batch).
+-- onPlan(plan): called once after the plan is built, before execution starts.
+-- onStepDone(): called after each full plan step completes.
+function Crafting.craftItem(recipeName, count, onStep, onPlan, onStepDone)
   Logger.printInfo(string.format("Planning '%s' x%d..", recipeName, count))
 
   local totals, maxDmg = Stock.getDurabilityAwareTotals()
@@ -409,6 +414,7 @@ function Crafting.craftItem(recipeName, count, onStep)
   end
 
   Planner.printPlan(plan)
+  if onPlan then onPlan(plan) end
 
   local missing = Planner.validatePlan(plan, totals, maxDmg)
   if #missing > 0 then
@@ -420,18 +426,38 @@ function Crafting.craftItem(recipeName, count, onStep)
     error(table.concat(lines, "\n"), 0)
   end
 
-  for i, step in ipairs(plan) do
+  -- Count total individual craft runs for per-item progress tracking.
+  -- Machine steps contribute craftsCount runs; crafter steps always 1 (whole batch at once).
+  local totalRuns = 0
+  for _, step in ipairs(plan) do
+    if (step.recipe.type or "crafter") == "machine" then
+      totalRuns = totalRuns + step.craftsCount
+    else
+      totalRuns = totalRuns + 1
+    end
+  end
+
+  local doneRuns = 0
+  for _, step in ipairs(plan) do
     Logger.printInfo(
       string.format("Crafting '%s' x%d craft(s) as one batch..", step.name, step.craftsCount)
     )
-    -- Pass craftsCount as batchSize so all iterations happen in a single craft call
-    Crafting.processCraft(step.recipe, step.craftsCount)
-    if onStep then onStep(i, #plan) end
+    Crafting.processCraft(step.recipe, step.craftsCount, function()
+      doneRuns = doneRuns + 1
+      if onStep then onStep(doneRuns, totalRuns) end
+    end)
+    if onStepDone then onStepDone() end
   end
 
   Logger.printSuccess(
     string.format("Done! Crafted '%s' x%d", recipeName, count)
   )
+end
+
+-- Builds and returns the craft plan without executing it (for UI preview).
+function Crafting.buildPlan(recipeName, count)
+  local totals = Stock.getDurabilityAwareTotals()
+  return Planner.buildCraftPlan(recipeName, count, totals)
 end
 
 return Crafting
