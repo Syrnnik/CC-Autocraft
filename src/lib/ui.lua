@@ -1,5 +1,6 @@
 local Config = require("lib.config")
 local Crafting = require("lib.crafting")
+local Labels = require("lib.labels")
 local Network = require("lib.network")
 local Recipes = require("lib.recipes")
 local Stock = require("lib.stock")
@@ -31,6 +32,12 @@ local state = {
   -- search state
   searchQuery = "",
   searchMode = false,
+  -- labels tab state
+  labelsPage = 1,
+  labelItems = {}, -- { name (peripheral), label }
+  labelEditTarget = nil,
+  labelInput = "",
+  labelInputMode = false,
   -- new_recipe tab state
   msg = nil,
   msgIsErr = false,
@@ -97,15 +104,20 @@ end
 -- ── Shared item table ───────────────────────────────────────
 -- Draws a paginated two-column table (ITEM | COUNT) with alternating rows.
 -- opts fields:
---   topY        : first row (header)
---   items       : list of { name, count }
---   page        : current page number
---   setPage     : function(p) — updates page state
---   displayName : function(name) -> display string (default: identity)
---   rightW      : chars reserved right of the name (gap + count + any buttons)
---   emptyMsg    : shown when items is empty
---   drawActions : optional function(item, row, rowBg, xCount)
-local function drawItemTable(opts)
+--   topY          : first row (header)
+--   items         : list of { name, count } (count unused if countText provided)
+--   page          : current page number
+--   setPage       : function(p) — updates page state
+--   displayName   : function(name) -> display string (default: identity)
+--   rightW        : chars reserved right of the name (gap + count + any buttons)
+--   emptyMsg      : shown when items is empty
+--   drawActions   : optional function(item, row, rowBg, xCount)
+--   headerName    : left column header text (default "ITEM")
+--   headerCount   : right column header text (default "COUNT")
+--   countText     : optional function(item) -> string, overrides "x"..count display
+--   countColor    : optional function(item) -> color, overrides colors.yellow
+--   alwaysShowPage: always render "N / M" even when only 1 page
+local function drawTable(opts)
   local headerY  = opts.topY
   local listStart = opts.topY + 1
   local paginationY = H
@@ -122,9 +134,11 @@ local function drawItemTable(opts)
   local itemW = math.max(0, math.min(maxNameLen, W - L - rightW))
   local xCount = L + itemW + 1
 
+  local hName  = opts.headerName  or "ITEM"
+  local hCount = opts.headerCount or "COUNT"
   fill(headerY, colors.gray)
-  at(xCount - #"ITEM" - 1, headerY, "ITEM", colors.lightGray, colors.gray)
-  at(xCount, headerY, "COUNT", colors.lightGray, colors.gray)
+  at(math.max(L, xCount - #hName - 1), headerY, hName,  colors.lightGray, colors.gray)
+  at(xCount,                           headerY, hCount, colors.lightGray, colors.gray)
 
   local total = #items
   local totalPages = math.max(1, math.ceil(total / listH))
@@ -145,8 +159,10 @@ local function drawItemTable(opts)
       fill(row, rowBg)
 
       local dn = truncate(displayName(item.name), itemW)
-      at(math.max(L, xCount - #dn - 1), row, dn, colors.lightGray, rowBg)
-      at(xCount, row, "x" .. item.count, colors.yellow, rowBg)
+      at(math.max(L, xCount - #dn - 1), row, dn, colors.white, rowBg)
+      local countStr   = opts.countText  and opts.countText(item)  or ("x" .. item.count)
+      local countColor = opts.countColor and opts.countColor(item) or colors.yellow
+      at(xCount, row, countStr, countColor, rowBg)
 
       if opts.drawActions then
         opts.drawActions(item, row, rowBg, xCount)
@@ -158,17 +174,21 @@ local function drawItemTable(opts)
 
   -- Page nav + Search button (left side, together)
   local afterNav = L
-  if totalPages > 1 then
+  if totalPages > 1 or opts.alwaysShowPage then
     local pageText = page .. " / " .. totalPages
     at(L, paginationY, pageText, colors.black, colors.yellow)
     local btnX = L + #pageText + 1
-    mkBtn(btnX, paginationY, "^", colors.black, colors.orange, function()
-      if page > 1 then opts.setPage(page - 1) end
-    end)
-    mkBtn(btnX + 5, paginationY, "v", colors.black, colors.orange, function()
-      if page < totalPages then opts.setPage(page + 1) end
-    end)
-    afterNav = btnX + 10
+    if totalPages > 1 then
+      mkBtn(btnX, paginationY, "^", colors.black, colors.orange, function()
+        if page > 1 then opts.setPage(page - 1) end
+      end)
+      mkBtn(btnX + 5, paginationY, "v", colors.black, colors.orange, function()
+        if page < totalPages then opts.setPage(page + 1) end
+      end)
+      afterNav = btnX + 10
+    else
+      afterNav = btnX
+    end
   end
 
   local searchBtnW
@@ -202,6 +222,7 @@ local reloadRecipes
 local reloadStock
 local reloadMachines
 local reloadMachineItems
+local reloadLabels
 
 -- ── Sections ───────────────────────────────────────────────
 
@@ -210,9 +231,10 @@ local function drawTabs()
   local x = L
 
   local tabs = {
-    { id = "recipes", label = " RECIPES " },
-    { id = "stock", label = " STOCK " },
+    { id = "recipes",    label = " RECIPES " },
+    { id = "stock",      label = " STOCK " },
     { id = "new_recipe", label = " +RECIPE " },
+    { id = "labels",     label = " LABELS " },
   }
 
   for _, tab in ipairs(tabs) do
@@ -233,7 +255,12 @@ local function drawTabs()
       fn = function()
         state.searchQuery = ""
         state.searchMode = false
-        if tab.id == "recipes" then
+        state.labelInputMode = false
+        if tab.id == "labels" then
+          state.tab = "labels"
+          state.labelsPage = 1
+          reloadLabels()
+        elseif tab.id == "recipes" then
           state.tab = "recipes"
           state.page = 1
           state.deleteTarget = nil
@@ -408,7 +435,7 @@ local function drawRecipesList()
   end
 
   -- Right zone: 1 gap + 6 count + 8 Craft + 7 Edit + 5 Del = 27
-  drawItemTable({
+  drawTable({
     topY        = headerY,
     items       = filtered,
     page        = state.page,
@@ -1010,7 +1037,7 @@ local function drawStockList()
     items = filtered
   end
 
-  drawItemTable({
+  drawTable({
     topY        = BODY_ROW,
     items       = items,
     page        = state.stockPage,
@@ -1018,6 +1045,74 @@ local function drawStockList()
     displayName = stripMod,
     rightW      = 9,
     emptyMsg    = "Stock is empty",
+  })
+end
+
+-- ── Labels tab ──────────────────────────────────────────────
+
+local function drawLabels()
+  for y = BODY_ROW, H do fill(y, colors.black) end
+
+  -- rightW=26: 12 label + 1 gap + 6 Edit + 1 gap + 5 Del + 1 margin
+  -- Button offsets from xCount: Edit/Save at +13, Del at +20, Cancel at +17
+  local LABEL_W = 12
+
+  drawTable({
+    topY           = BODY_ROW,
+    items          = state.labelItems,
+    page           = state.labelsPage,
+    setPage        = function(p) state.labelsPage = p end,
+    displayName    = stripMod,
+    rightW         = 26,
+    emptyMsg       = "No peripherals found",
+    headerName     = "Peripheral",
+    headerCount    = "Label",
+    alwaysShowPage = true,
+    countText  = function(item)
+      if state.labelInputMode and state.labelEditTarget == item.name then
+        return truncate(state.labelInput .. "_", LABEL_W)
+      end
+      return truncate(item.label ~= "" and item.label or "-", LABEL_W)
+    end,
+    countColor = function(item)
+      if state.labelInputMode and state.labelEditTarget == item.name then
+        return colors.yellow
+      end
+      return item.label ~= "" and colors.yellow or colors.lightGray
+    end,
+    drawActions = function(item, row, rowBg, xCount)
+      local editing   = state.labelInputMode and state.labelEditTarget == item.name
+      local captName  = item.name
+      local captLabel = item.label
+      if editing then
+        mkBtn(xCount + LABEL_W + 1, row, "v", colors.black, colors.green, function()
+          if state.labelInput ~= "" then
+            pcall(Labels.set, state.labelEditTarget, state.labelInput)
+          else
+            pcall(Labels.delete, state.labelEditTarget)
+          end
+          state.labelInputMode  = false
+          state.labelEditTarget = nil
+          reloadLabels()
+        end)
+        mkBtn(xCount + LABEL_W + 5, row, "x", colors.black, colors.red, function()
+          state.labelInputMode  = false
+          state.labelEditTarget = nil
+        end)
+      else
+        mkBtn(xCount + LABEL_W + 1, row, "Edit", colors.lightGray, colors.gray, function()
+          state.labelEditTarget = captName
+          state.labelInput      = captLabel
+          state.labelInputMode  = true
+        end)
+        if item.label ~= "" then
+          mkBtn(xCount + LABEL_W + 8, row, "Del", colors.black, colors.red, function()
+            pcall(Labels.delete, captName)
+            reloadLabels()
+          end)
+        end
+      end
+    end,
   })
 end
 
@@ -1034,6 +1129,8 @@ local function drawScreen()
     drawCraftScreen()
   elseif state.tab == "stock" then
     drawStockList()
+  elseif state.tab == "labels" then
+    drawLabels()
   else
     drawNewRecipe()
   end
@@ -1139,6 +1236,21 @@ reloadMachineItems = function()
   end
 end
 
+reloadLabels = function()
+  local perifs = {}
+  for _, name in ipairs(peripheral.getNames()) do
+    table.insert(perifs, name)
+  end
+  table.sort(perifs)
+
+  local data = Labels.getAll()
+  local items = {}
+  for _, name in ipairs(perifs) do
+    table.insert(items, { name = name, label = data[name] or "" })
+  end
+  state.labelItems = items
+end
+
 -- ── Entry ───────────────────────────────────────────────────
 
 function UI.run(monitorName)
@@ -1154,6 +1266,7 @@ function UI.run(monitorName)
   reloadRecipes()
   reloadMachines()
   reloadMachineItems()
+  reloadLabels()
   drawScreen()
 
   while true do
@@ -1192,6 +1305,33 @@ function UI.run(monitorName)
           drawScreen()
         elseif key == keys.enter or key == keys.escape then
           state.searchMode = false
+          drawScreen()
+        end
+      end
+    elseif state.labelInputMode then
+      if evType == "char" then
+        state.labelInput = state.labelInput .. ev[2]
+        drawScreen()
+      elseif evType == "key" then
+        local key = ev[2]
+        if key == keys.backspace then
+          if #state.labelInput > 0 then
+            state.labelInput = state.labelInput:sub(1, -2)
+          end
+          drawScreen()
+        elseif key == keys.enter then
+          if state.labelInput ~= "" then
+            pcall(Labels.set, state.labelEditTarget, state.labelInput)
+          else
+            pcall(Labels.delete, state.labelEditTarget)
+          end
+          state.labelInputMode = false
+          state.labelEditTarget = nil
+          reloadLabels()
+          drawScreen()
+        elseif key == keys.escape then
+          state.labelInputMode = false
+          state.labelEditTarget = nil
           drawScreen()
         end
       end
