@@ -23,6 +23,7 @@ Config.NEW_RECIPE_INTERFACE_ROW_SIZE = 9
 Config.PATTERN_START = 4
 
 Config.RECIPES_PATH = "data/recipes.json"
+Config.LABELS_PATH  = "data/labels.json"
 
 Config.NETWORK_EVENTS = {
   CRAFT = "craft",
