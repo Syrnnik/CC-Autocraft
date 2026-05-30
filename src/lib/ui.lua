@@ -28,6 +28,9 @@ local state = {
   selectedItemIdx = nil, -- index in machineItems for inline machine picker
   resultProcessor = nil, -- machine to pull result from
   resultPickerOpen = false,
+  -- search state
+  searchQuery = "",
+  searchMode = false,
   -- new_recipe tab state
   msg = nil,
   msgIsErr = false,
@@ -37,7 +40,10 @@ local state = {
   craftCount = 1,
   craftMsg = nil,
   craftMsgIsErr = false,
+  craftMsgIsDone = false,
   craftProgress = 0, -- 0-100
+  craftPlanning = false, -- true while plan is being built
+  craftPlan = nil, -- list of { name, craftsCount, recipe } for display
 }
 
 local L = 2 -- left margin
@@ -149,6 +155,9 @@ local function drawItemTable(opts)
   end
 
   fill(paginationY, colors.yellow)
+
+  -- Page nav + Search button (left side, together)
+  local afterNav = L
   if totalPages > 1 then
     local pageText = page .. " / " .. totalPages
     at(L, paginationY, pageText, colors.black, colors.yellow)
@@ -159,6 +168,33 @@ local function drawItemTable(opts)
     mkBtn(btnX + 5, paginationY, "v", colors.black, colors.orange, function()
       if page < totalPages then opts.setPage(page + 1) end
     end)
+    afterNav = btnX + 10
+  end
+
+  local searchBtnW
+  if state.searchMode then
+    mkBtn(afterNav, paginationY, "x", colors.white, colors.red, function()
+      state.searchQuery = ""
+      state.searchMode = false
+      state.page = 1
+      state.stockPage = 1
+    end)
+    searchBtnW = #(" x ")
+  else
+    mkBtn(afterNav, paginationY, "Search", colors.black, colors.orange, function()
+      state.searchMode = true
+    end)
+    searchBtnW = #(" Search ")
+  end
+
+  -- Query display (after Search/x button)
+  if state.searchQuery ~= "" or state.searchMode then
+    local queryStart = afterNav + searchBtnW + 1
+    local display = state.searchQuery .. (state.searchMode and "_" or "")
+    if queryStart <= W then
+      at(queryStart, paginationY, truncate(display, W - queryStart + 1),
+         colors.black, colors.yellow)
+    end
   end
 end
 
@@ -195,6 +231,8 @@ local function drawTabs()
       x2 = x2,
       y = TABS_ROW,
       fn = function()
+        state.searchQuery = ""
+        state.searchMode = false
         if tab.id == "recipes" then
           state.tab = "recipes"
           state.page = 1
@@ -359,10 +397,13 @@ local function drawRecipesList()
   end
 
   -- Build filtered list
+  local sq = state.searchQuery:lower()
   local filtered = {}
   for _, r in ipairs(state.recipes) do
     if state.modTab == "all" or getMod(r.name) == state.modTab then
-      table.insert(filtered, r)
+      if sq == "" or stripMod(r.name):lower():find(sq, 1, true) then
+        table.insert(filtered, r)
+      end
     end
   end
 
@@ -395,7 +436,10 @@ local function drawRecipesList()
           state.craftCount = 1
           state.craftMsg = nil
           state.craftMsgIsErr = false
+          state.craftMsgIsDone = false
           state.craftProgress = 0
+          state.craftPlanning = false
+          state.craftPlan = nil
           state.tab = "craft"
         end)
         mkBtn(xEdit, row, "Edit", colors.lightGray, colors.gray, function()
@@ -850,56 +894,101 @@ local function drawCraftScreen()
 
   cur = cur + 2
 
-  -- Craft button (always active — user can re-craft immediately)
-  mkBtn(L, cur, "Craft", colors.black, colors.cyan, function()
-    local name = state.craftItem
-    local count = state.craftCount
-    state.craftMsg = "Crafting " .. stripMod(name) .. " x" .. count .. "..."
-    state.craftMsgIsErr = false
-    state.craftProgress = 0
-    pendingTask = function(redraw)
-      local ok, err = pcall(Crafting.craftItem, name, count, function(i, total)
-        state.craftProgress = math.floor(i / total * 100)
-        if redraw then redraw() end
-      end)
-      if ok then
-        state.craftMsg = "Done! " .. stripMod(name) .. " x" .. count
-        state.craftMsgIsErr = false
-        state.craftProgress = 100
-      else
-        state.craftMsg = tostring(err)
-        state.craftMsgIsErr = true
-        state.craftProgress = 0
-      end
-      reloadRecipes()
-    end
-  end)
+  local notStarted = not state.craftPlanning
+    and state.craftPlan == nil
+    and not state.craftMsgIsErr
 
-  -- Message area: first line in red for errors, rest in white; yellow for success
-  if state.craftMsg then
-    local msgRow = cur + 2
-    if state.craftMsgIsErr then
+  if notStarted then
+    -- No craft in progress: Craft button + optional Done message
+    mkBtn(L, cur, "Craft", colors.black, colors.cyan, function()
+      local name = state.craftItem
+      local count = state.craftCount
+      state.craftMsg = nil
+      state.craftMsgIsErr = false
+      state.craftMsgIsDone = false
+      state.craftProgress = 0
+      state.craftPlanning = true
+      state.craftPlan = nil
+      pendingTask = function(redraw)
+        local ok, err = pcall(Crafting.craftItem, name, count,
+          function(i, total)
+            state.craftProgress = math.floor(i / total * 100)
+            if redraw then redraw() end
+          end,
+          function(plan)
+            state.craftPlan = plan
+            state.craftPlanning = false
+            if redraw then redraw() end
+          end,
+          function()
+            if state.craftPlan and #state.craftPlan > 0 then
+              table.remove(state.craftPlan, 1)
+            end
+            if redraw then redraw() end
+          end
+        )
+        if ok then
+          state.craftPlan = nil
+          state.craftMsgIsDone = true
+          state.craftMsg = "Done! " .. stripMod(name) .. " x" .. count
+          state.craftProgress = 100
+        else
+          state.craftMsg = tostring(err)
+          state.craftMsgIsErr = true
+          state.craftPlanning = false
+          state.craftProgress = 0
+        end
+        reloadRecipes()
+      end
+    end)
+
+    if state.craftMsgIsDone and state.craftMsg then
+      at(L, cur + 2, truncate(state.craftMsg, W - L), colors.green, colors.black)
+    end
+  else
+    -- Craft started: header + content
+    fill(cur, colors.gray)
+    at(L, cur, "Planned crafts", colors.white, colors.gray)
+
+    local planStart = cur + 1
+    local planEnd = H - 3
+
+    if state.craftMsgIsErr and state.craftMsg then
       local lines = {}
       for line in (state.craftMsg .. "\n"):gmatch("([^\n]*)\n") do
         table.insert(lines, line)
       end
       for i, line in ipairs(lines) do
-        if msgRow + i - 1 >= H - 2 then break end
-        at(L, msgRow + i - 1, truncate(line, W - L), colors.red, colors.black)
+        local row = planStart + i - 1
+        if row > planEnd then break end
+        at(L, row, truncate(line, W - L), colors.red, colors.black)
       end
-    else
-      at(L, msgRow, truncate(state.craftMsg, W - L), colors.yellow, colors.black)
+    elseif state.craftPlanning then
+      at(L, planStart, "Planning...", colors.yellow, colors.black)
+    elseif state.craftPlan then
+      for i, step in ipairs(state.craftPlan) do
+        local row = planStart + i - 1
+        if row > planEnd then break end
+        local label = "- " .. stripMod(step.name) .. " x" .. (step.craftsCount * step.recipe.count)
+        at(L, row, truncate(label, W - L), colors.lightGray, colors.black)
+      end
     end
   end
 
-  -- Progress bar one row above the bottom
+  -- Progress header
+  at(L, H - 2, "Progress", colors.gray, colors.black)
+
+  -- Progress bar: pct%[====----]
   local barRow = H - 1
-  local prefix = "Progress: "
-  local barW = W - L - #prefix
-  local filled = math.floor(state.craftProgress / 100 * barW)
-  at(L, barRow, prefix, colors.gray, colors.black)
-  at(L + #prefix, barRow, string.rep(" ", filled), colors.black, colors.lightGray)
-  at(L + #prefix + filled, barRow, string.rep(" ", barW - filled), colors.black, colors.gray)
+  local pct = string.format("%3d%%", state.craftProgress)
+  local barX = L + #pct      -- [ sits right after percent text
+  local inner = W - barX - 1 -- bar width; ] lands exactly at W
+  local filled = math.floor(state.craftProgress / 100 * inner)
+  at(L,                 barRow, pct,                              colors.orange, colors.black)
+  at(barX,              barRow, "[",                              colors.gray,   colors.black)
+  at(barX + 1,          barRow, string.rep("=", filled),          colors.lime,   colors.black)
+  at(barX + 1 + filled, barRow, string.rep("-", inner - filled),  colors.gray,   colors.black)
+  at(barX + 1 + inner,  barRow, "]",                              colors.gray,   colors.black)
 end
 
 -- ── Stock tab ───────────────────────────────────────────────
@@ -909,9 +998,21 @@ local function drawStockList()
     fill(y, colors.black)
   end
 
+  local items = state.stockItems
+  if state.searchQuery ~= "" then
+    local sq = state.searchQuery:lower()
+    local filtered = {}
+    for _, item in ipairs(items) do
+      if stripMod(item.name):lower():find(sq, 1, true) then
+        table.insert(filtered, item)
+      end
+    end
+    items = filtered
+  end
+
   drawItemTable({
     topY        = BODY_ROW,
-    items       = state.stockItems,
+    items       = items,
     page        = state.stockPage,
     setPage     = function(p) state.stockPage = p end,
     displayName = stripMod,
@@ -1056,8 +1157,11 @@ function UI.run(monitorName)
   drawScreen()
 
   while true do
-    local _, side, x, y = os.pullEvent("monitor_touch")
-    if side == monitorName then
+    local ev = { os.pullEvent() }
+    local evType = ev[1]
+
+    if evType == "monitor_touch" and ev[2] == monitorName then
+      local x, y = ev[3], ev[4]
       for _, btn in ipairs(buttons) do
         if y == btn.y and x >= btn.x1 and x <= btn.x2 then
           btn.fn()
@@ -1069,6 +1173,26 @@ function UI.run(monitorName)
             drawScreen()
           end
           break
+        end
+      end
+    elseif state.searchMode then
+      if evType == "char" then
+        state.searchQuery = state.searchQuery .. ev[2]
+        state.page = 1
+        state.stockPage = 1
+        drawScreen()
+      elseif evType == "key" then
+        local key = ev[2]
+        if key == keys.backspace then
+          if #state.searchQuery > 0 then
+            state.searchQuery = state.searchQuery:sub(1, -2)
+          end
+          state.page = 1
+          state.stockPage = 1
+          drawScreen()
+        elseif key == keys.enter or key == keys.escape then
+          state.searchMode = false
+          drawScreen()
         end
       end
     end
