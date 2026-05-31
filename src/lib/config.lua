@@ -6,11 +6,7 @@ Config.IS_DEBUG_MODE = true
 -- Config.CLEAR_CRAFTER_BEFORE_CRAFT = true
 Config.CLEAR_CRAFTER_BEFORE_CRAFT = false
 
-Config.STOCK_NAME = "create:item_vault_1"
-Config.NEW_RECIPE_INTERFACE_NAME = "minecraft:barrel_0"
-Config.CRAFTER_NAME = "turtle_2"
 Config.CRAFTER_NETWORK_ID = 5
-Config.MONITOR_NAME = "monitor_1"
 
 Config.MONITOR_TEXT_SCALE = 1.0
 
@@ -24,6 +20,7 @@ Config.PATTERN_START = 4
 
 Config.RECIPES_PATH = "data/recipes.json"
 Config.LABELS_PATH  = "data/labels.json"
+Config.ROLES_PATH   = "data/roles.json"
 
 Config.NETWORK_EVENTS = {
   CRAFT = "craft",

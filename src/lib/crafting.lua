@@ -3,11 +3,16 @@ local Logger = require("lib.logger")
 local Network = require("lib.network")
 local Planner = require("lib.planner")
 local Recipes = require("lib.recipes")
-local Stock = require("lib.stock")
-local Utils = require("lib.utils")
+local Roles   = require("lib.roles")
+local Stock   = require("lib.stock")
+local Utils   = require("lib.utils")
 
-local crafterName = Config.CRAFTER_NAME
-local newRecipeInterfaceName = Config.NEW_RECIPE_INTERFACE_NAME
+-- Peripheral names read from Roles at call time (not module load time)
+-- so that changes via the SETUP tab take effect without restart.
+local function getCrafter()     return Roles.get("crafter")          end
+local function interfaceName()  return Roles.get("recipe_interface") end
+local function stockInName()    return Roles.get("stock_in")         end
+local function stockOutName()   return Roles.get("stock_out")        end
 
 local crafterNetworkID = Config.CRAFTER_NETWORK_ID
 local networkEvents = Config.NETWORK_EVENTS
@@ -17,8 +22,6 @@ local clearCrafterBeforeCraft = Config.CLEAR_CRAFTER_BEFORE_CRAFT
 local patternSize = Config.PATTERN_SIZE
 local patternStart = Config.PATTERN_START
 local newRecipeInterfaceRowSize = Config.NEW_RECIPE_INTERFACE_ROW_SIZE
-
-local stockName = Config.STOCK_NAME
 
 local Crafting = {}
 
@@ -51,7 +54,7 @@ function Crafting.pushItemsToCrafter(items, fromInterfaceName)
     )
 
     local count =
-      fromInterface.pushItems(crafterName, itemSlot, item.count, crafterSlot)
+      fromInterface.pushItems(getCrafter(), itemSlot, item.count, crafterSlot)
 
     if count == 0 then
       Logger.raiseError(
@@ -60,7 +63,7 @@ function Crafting.pushItemsToCrafter(items, fromInterfaceName)
           itemName,
           fromInterfaceName,
           itemSlot,
-          crafterName,
+          getCrafter(),
           crafterSlot
         )
       )
@@ -75,14 +78,14 @@ function Crafting.returnRecipeItems(items, toInterfaceName)
 
   for _, item in pairs(items) do
     local crafterSlot = item.crafterSlot
-    local count = toInterface.pullItems(crafterName, crafterSlot)
+    local count = toInterface.pullItems(getCrafter(), crafterSlot)
 
     if count == 0 then
       Logger.raiseError(
         string.format(
           "Failed to pull '%s' from '%s' (%d) to '%s'",
           item.name,
-          crafterName,
+          getCrafter(),
           crafterSlot,
           toInterfaceName
         )
@@ -101,18 +104,18 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot)
   if not isSpecificSlot then
     -- Pull everything from all crafter slots (batch craft fills multiple slots)
     for slot = 1, 16 do
-      toInterface.pullItems(crafterName, slot)
+      toInterface.pullItems(getCrafter(), slot)
     end
     return
   end
 
   local destSlot = Crafting.getSlotToPutItem()
-  local count = toInterface.pullItems(crafterName, 1, nil, destSlot)
+  local count = toInterface.pullItems(getCrafter(), 1, nil, destSlot)
   if count == 0 then
     Logger.raiseError(
       string.format(
         "Failed to pull items from '%s' to '%s'",
-        crafterName,
+        getCrafter(),
         toInterfaceName
       )
     )
@@ -129,7 +132,7 @@ function Crafting.craft(items, fromInterfaceName)
   if clearCrafterBeforeCraft then
     local fromInterface = peripheral.wrap(fromInterfaceName)
     for slot = 1, 16 do
-      fromInterface.pullItems(crafterName, slot)
+      fromInterface.pullItems(getCrafter(), slot)
     end
   end
 
@@ -156,7 +159,7 @@ end
 -- Returns items in the recipe interface pattern slots only (same grid used by
 -- getNewRecipeItems). Ignores items in other slots (e.g. decoration stacks).
 function Crafting.getInterfaceItems()
-  local listing = peripheral.wrap(newRecipeInterfaceName).list()
+  local listing = peripheral.wrap(interfaceName()).list()
   local items = {}
   for _, slot in ipairs(patternSlots()) do
     local item = listing[slot]
@@ -170,7 +173,7 @@ end
 -- Push machineItems from the recipe interface to their processors, wait for
 -- a result to appear in resultProcessor, pull it back, then clear all machines.
 function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
-  local interface = peripheral.wrap(newRecipeInterfaceName)
+  local interface = peripheral.wrap(interfaceName())
 
   -- Items placed directly into the result machine (ignored during polling
   -- until they are transformed into the actual result).
@@ -243,7 +246,8 @@ end
 -- Execute one machine craft cycle from stock: push items to their processors,
 -- wait for the result, pull it to stock, then clear all machines.
 function Crafting.craftMachine(recipe)
-  local stock = peripheral.wrap(stockName)
+  local stockIn  = peripheral.wrap(stockInName())
+  local stockOut = peripheral.wrap(stockOutName())
   local pushList = Stock.getItemsForMachineRecipe(recipe)
 
   -- Items placed directly into the result machine (ignored during polling)
@@ -258,7 +262,7 @@ function Crafting.craftMachine(recipe)
     Logger.printInfo(
       string.format("Pushing '%s' to '%s'", item.name, item.processor)
     )
-    local pushed = stock.pushItems(item.processor, item.slot, item.count)
+    local pushed = stockIn.pushItems(item.processor, item.slot, item.count)
     if pushed == 0 then
       Logger.raiseError(
         string.format("Failed to push '%s' to '%s'", item.name, item.processor)
@@ -281,7 +285,7 @@ function Crafting.craftMachine(recipe)
     end
     if resultSlot then
       for s, _ in pairs(peripheral.wrap(recipe.resultProcessor).list()) do
-        stock.pullItems(recipe.resultProcessor, s)
+        stockOut.pullItems(recipe.resultProcessor, s)
       end
       got = true
       break
@@ -295,7 +299,7 @@ function Crafting.craftMachine(recipe)
     if not seen[item.processor] then
       seen[item.processor] = true
       for slot, _ in pairs(peripheral.wrap(item.processor).list()) do
-        stock.pullItems(item.processor, slot)
+        stockOut.pullItems(item.processor, slot)
       end
     end
   end
@@ -309,9 +313,9 @@ end
 
 -- Pull all items from the crafter back to the recipe interface
 function Crafting.clearCrafter()
-  local interface = peripheral.wrap(newRecipeInterfaceName)
+  local interface = peripheral.wrap(interfaceName())
   for slot = 1, 16 do
-    interface.pullItems(crafterName, slot)
+    interface.pullItems(getCrafter(), slot)
   end
   Logger.printInfo("Crafter cleared")
 end
@@ -319,11 +323,11 @@ end
 -- Push recipe pattern slots (and crafted-item slot) from the recipe interface
 -- back to stock. Only touches the slots actually used for recipe input.
 function Crafting.clearRecipeInterface()
-  local stock = peripheral.wrap(stockName)
+  local stock = peripheral.wrap(stockOutName())
   for _, slot in ipairs(patternSlots()) do
-    stock.pullItems(newRecipeInterfaceName, slot)
+    stock.pullItems(interfaceName(), slot)
   end
-  stock.pullItems(newRecipeInterfaceName, Crafting.getSlotToPutItem())
+  stock.pullItems(interfaceName(), Crafting.getSlotToPutItem())
   Logger.printInfo("Recipe interface cleared")
 end
 
@@ -331,9 +335,9 @@ end
 -- without saving anything. Raises an error on failure.
 function Crafting.craftNewRecipe()
   Logger.printDebug(
-    string.format("Getting items from '%s'", newRecipeInterfaceName)
+    string.format("Getting items from '%s'", interfaceName())
   )
-  local recipeItems = Recipes.getNewRecipeItems(newRecipeInterfaceName)
+  local recipeItems = Recipes.getNewRecipeItems(interfaceName())
 
   if #recipeItems == 0 then
     Logger.raiseError("Items for new recipe not found")
@@ -341,9 +345,9 @@ function Crafting.craftNewRecipe()
   Logger.printInfo("New recipe items:", Utils.serializeTable(recipeItems))
 
   Logger.printInfo("Crafting..")
-  Crafting.craft(recipeItems, newRecipeInterfaceName)
+  Crafting.craft(recipeItems, interfaceName())
 
-  local craftedItem = Crafting.getCraftedItem(newRecipeInterfaceName, true)
+  local craftedItem = Crafting.getCraftedItem(interfaceName(), true)
   return recipeItems, craftedItem
 end
 
@@ -369,7 +373,7 @@ function Crafting.processCraft(recipe, batchSize, onEach)
   local recipeItem = recipe.name
   local recipeCount = recipe.count
   local recipeType = recipe.type or "crafter"
-  local processor = recipe.processor or crafterName
+  local processor = recipe.processor or getCrafter()
 
   Logger.printInfo(
     string.format(
@@ -389,8 +393,8 @@ function Crafting.processCraft(recipe, batchSize, onEach)
     end
   else
     local stockItems = Stock.getItemsForRecipe(recipe, batchSize)
-    Crafting.craft(stockItems, stockName)
-    Crafting.getCraftedItem(stockName, false)
+    Crafting.craft(stockItems, stockInName())
+    Crafting.getCraftedItem(stockOutName(), false)
     if onEach then onEach() end
   end
 

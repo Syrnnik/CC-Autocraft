@@ -1,5 +1,6 @@
 local Config = require("lib.config")
 local Logger = require("lib.logger")
+local Roles  = require("lib.roles")
 
 local patternSize = Config.PATTERN_SIZE
 local crafterRowSize = Config.CRAFTER_ROW_SIZE
@@ -214,7 +215,7 @@ function Recipes.saveRecipe(
   if type == "machine" then
     recipe.resultProcessor = resultProcessor
   else
-    recipe.processor = processor or Config.CRAFTER_NAME
+    recipe.processor = processor or Roles.get("crafter")
   end
 
   Recipes.addNewRecipe(recipe)
@@ -249,7 +250,7 @@ function Recipes.updateRecipeProcessor(
       end
     end
   else
-    recipe.processor = processor or Config.CRAFTER_NAME
+    recipe.processor = processor or Roles.get("crafter")
     recipe.resultProcessor = nil
   end
 

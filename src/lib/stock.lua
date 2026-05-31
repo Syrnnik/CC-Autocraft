@@ -1,20 +1,39 @@
-local Config = require("lib.config")
-local Logger = require("lib.logger")
+local Logger  = require("lib.logger")
 local Recipes = require("lib.recipes")
-
-local stockName = Config.STOCK_NAME
+local Roles   = require("lib.roles")
 
 local Stock = {}
 
-local function getStock()
-  return peripheral.wrap(stockName)
+-- Returns slot-indexed item listing from a peripheral.
+-- Prefers stock() over list() when available.
+local function listItems(p)
+  if p.stock then return p.stock() end
+  return p.list()
+end
+
+local function getStockView()
+  local name = Roles.get("stock_view")
+  return name and peripheral.wrap(name) or nil
+end
+
+local function getStockIn()
+  local name = Roles.get("stock_in")
+  return name and peripheral.wrap(name) or nil
 end
 
 function Stock.getMissingItems(items)
+  local view = getStockView()
+  if not view then
+    local missing = {}
+    for _, item in pairs(items) do
+      table.insert(missing, { name = item.name, count = item.count })
+    end
+    return {}, missing
+  end
   -- Sum totals across all stock slots (handles split stacks)
   local stockTotals = {}
   local stockFirstSlot = {}
-  for slot, stockItem in pairs(getStock().list()) do
+  for slot, stockItem in pairs(listItems(view)) do
     local name = stockItem.name
     stockTotals[name] = (stockTotals[name] or 0) + stockItem.count
     if not stockFirstSlot[name] then
@@ -83,7 +102,8 @@ function Stock.getItemsForRecipe(recipe, batchSize)
   -- This allows recipe positions to be spread across multiple source slots
   -- when the total needed exceeds what any single slot holds.
   local slotsByName = {}
-  for slot, item in pairs(getStock().list()) do
+  local stockIn = getStockIn()
+  for slot, item in pairs(listItems(stockIn)) do
     local name = item.name
     if not slotsByName[name] then
       slotsByName[name] = {}
@@ -127,7 +147,8 @@ end
 -- routed to the item's assigned processor.
 function Stock.getItemsForMachineRecipe(recipe)
   local slotsByName = {}
-  for slot, item in pairs(getStock().list()) do
+  local stockIn2 = getStockIn()
+  for slot, item in pairs(listItems(stockIn2)) do
     local name = item.name
     if not slotsByName[name] then
       slotsByName[name] = {}
@@ -164,8 +185,10 @@ function Stock.getItemsForMachineRecipe(recipe)
 end
 
 function Stock.getTotals()
+  local stock = getStockView()
+  if not stock then return {} end
   local totals = {}
-  for _, item in pairs(getStock().list()) do
+  for _, item in pairs(listItems(stock)) do
     local name = item.name
     totals[name] = (totals[name] or 0) + item.count
   end
@@ -177,11 +200,12 @@ end
 -- Also returns maxDmg map { [name] = maxDamage } for damageable items,
 -- used to convert a use-shortage back to an item count.
 function Stock.getDurabilityAwareTotals()
-  local stock = getStock()
+  local stock = getStockView()
+  if not stock then return {}, {} end
   local totals = {}
   local maxDmg = {}
 
-  for slot, item in pairs(stock.list()) do
+  for slot, item in pairs(listItems(stock)) do
     -- Damageable items cannot stack, so skip getItemDetail for count > 1.
     if item.count > 1 then
       totals[item.name] = (totals[item.name] or 0) + item.count
