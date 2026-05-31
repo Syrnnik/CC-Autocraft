@@ -1,22 +1,26 @@
 -- CC:Autocraft Installer
 -- Usage:
---   wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua computer
---   wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua crafter
+--   wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua computer [dest]
+--   wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua crafter [dest]
+--
+-- dest: optional install folder (default: autocraft)
 
 local args   = { ... }
 local TARGET = args[1]
 local BRANCH = "dev"
 local BASE   = "https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/"
   .. BRANCH .. "/src/"
-local DEST   = "autocraft"
+local DEST   = args[2] or "autocraft"
 
 local COMPUTER_FILES = {
   "lib/config.lua",
   "lib/crafting.lua",
+  "lib/labels.lua",
   "lib/logger.lua",
   "lib/network.lua",
   "lib/planner.lua",
   "lib/recipes.lua",
+  "lib/roles.lua",
   "lib/screen.lua",
   "lib/stock.lua",
   "lib/ui.lua",
@@ -74,7 +78,7 @@ local function download(path)
   return true
 end
 
-print("CC:Autocraft installer (" .. TARGET .. ")")
+print("CC:Autocraft installer (" .. TARGET .. " → " .. DEST .. ")")
 print(string.rep("-", 40))
 
 local failed = {}
@@ -96,7 +100,7 @@ end
 
 print(string.rep("-", 40))
 if #failed == 0 then
-  print("Done! Edit lib/config.lua to configure.")
+  print("Done! Open the monitor and use the SETUP tab to configure peripherals.")
 else
   print("Finished with errors:")
   for _, f in ipairs(failed) do
