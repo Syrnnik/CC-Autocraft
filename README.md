@@ -4,21 +4,32 @@ A [CC: Tweaked](https://tweaked.cc/) Lua program for automated multi-level craft
 
 ## What it does
 
-A touch-screen monitor UI lets you browse saved recipes, manage stock, and kick off crafting jobs with a count selector. The program figures out the full recipe chain, crafts all intermediate items it can (using what's already in storage), and delivers the result to the item vault.
+A touch-screen monitor UI lets you browse saved recipes, manage stock, label peripherals, and kick off crafting jobs with a count selector. The program figures out the full recipe chain, crafts all intermediate items it can (using what's already in storage), and delivers the result back to storage.
 
-**Example:** ask for 4 `oak_fence_gate` → the program automatically crafts the planks and sticks it needs, then crafts the fence gates.
+**Example:** ask for 10 `andesite_casing` → the program automatically crafts the stripped logs it needs first, then crafts the casings.
 
-Items with no recipe (raw materials like logs, ores, etc.) must already be present in the vault. If anything is missing, the program reports the full shortfall before starting.
+Items with no recipe (raw materials like logs, ores, etc.) must already be in storage. If anything is missing, the program reports the full shortfall before starting.
 
 ## How it works
 
 1. **Planning** — builds an ordered craft plan by walking the recipe tree bottom-up, using stock where available and scheduling crafts only for what's missing.
-2. **Validation** — simulates the plan against current stock and reports all missing items at once if anything is short.
-3. **Execution** — runs each craft step as a single batch: pushes all ingredients to the crafting turtle at once (or to the target machine), waits for the result, returns crafted items to the vault.
+2. **Validation** — simulates the plan against current stock and reports all missing items at once before starting.
+3. **Execution** — runs each craft step in order; progress bar updates after each individual craft. Finished items go to storage, ready for the next step.
 
 Two recipe types are supported:
+
 - **Crafter** — standard shaped/shapeless recipes processed by a crafting turtle.
 - **Machine** — items are pushed to one or more machine peripherals; the program waits for the result to appear and pulls it back.
+
+## UI tabs
+
+| Tab | Description |
+|-----|-------------|
+| **RECIPES** | Browse saved recipes, craft, edit, or delete them |
+| **STOCK** | View current inventory counts |
+| **+RECIPE** | Record a new recipe from the crafting interface |
+| **LABELS** | Assign friendly names to peripherals (e.g. `depot_3` → `lava_input`) |
+| **SETUP** | Assign system roles to peripherals (stock, crafter, monitor, etc.) |
 
 ## Components
 
@@ -26,32 +37,11 @@ Two recipe types are supported:
 |------|---------|------|
 | `monitor.lua` | Computer | Main entry point: launches the touch-screen UI |
 | `crafter.lua` | Turtle | Listens on rednet, calls `turtle.craft()` on demand |
-| `craft.lua` | Computer | CLI alternative: enter item name and count in terminal |
-| `new_craft.lua` | Computer | CLI alternative: record a new crafter recipe via terminal |
+| `craft.lua` | Computer | CLI: craft an item by name and count |
+| `new_craft.lua` | Computer | CLI: record a new crafter recipe |
 | `all_recipes.lua` | Computer | CLI: list all saved recipes |
 | `get_recipe.lua` | Computer | CLI: show details of a single recipe |
 | `delete_recipe.lua` | Computer | CLI: delete a recipe by name |
-
-## Config
-
-All settings are in `src/lib/config.lua`.
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `IS_DEBUG_MODE` | `false` | Enable verbose debug logging |
-| `STOCK_NAME` | `"create:item_vault_1"` | Peripheral name of the item vault |
-| `NEW_RECIPE_INTERFACE_NAME` | `"minecraft:barrel_0"` | Peripheral used to record new recipes |
-| `CRAFTER_NAME` | `"turtle_2"` | Peripheral name of the crafting turtle |
-| `CRAFTER_NETWORK_ID` | `5` | Rednet ID of the crafting turtle |
-| `MONITOR_NAME` | `"monitor_1"` | Peripheral name of the touch-screen monitor |
-| `MONITOR_TEXT_SCALE` | `1.0` | Text scale for the monitor |
-| `CRAFT_TIMEOUT` | `30` | Seconds to wait for the turtle before giving up |
-| `MACHINE_CRAFT_TIMEOUT` | `30` | Seconds to wait for a machine recipe to complete |
-| `CLEAR_CRAFTER_BEFORE_CRAFT` | `true` | Pull leftover items from the turtle before each craft |
-| `PATTERN_SIZE` | `3` | Recipe grid size (3 for a standard 3×3 grid) |
-| `NEW_RECIPE_INTERFACE_ROW_SIZE` | `9` | Row size of the recipe recording interface |
-| `PATTERN_START` | `4` | First slot of the recipe pattern in the interface |
-| `RECIPES_PATH` | `"data/recipes.json"` | Path where recipes are stored on disk |
 
 ## Installation (in-game)
 
@@ -67,9 +57,51 @@ On the **crafting turtle**:
 wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua crafter
 ```
 
-Both commands download all required files into an `autocraft/` directory. After installing, edit `autocraft/lib/config.lua` on each device to match your peripheral names and network IDs, then run `autocraft/monitor` on the computer and `autocraft/crafter` on the turtle.
+Both commands download all required files into an `autocraft/` folder. You can specify a different folder as the second argument:
 
-## Deploy
+```
+wget run .../install.lua computer myfolder
+```
+
+After installing, run `autocraft/monitor` on the computer and `autocraft/crafter` on the turtle.
+
+## Configuration
+
+### config.lua — edit once after install
+
+Only one value usually needs changing:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CRAFTER_NETWORK_ID` | `5` | Rednet ID of the crafting turtle (run `id` on the turtle) |
+
+Everything else is optional:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `IS_DEBUG_MODE` | `true` | Verbose logging — turn off for normal use |
+| `MONITOR_TEXT_SCALE` | `1.0` | Text scale for the monitor |
+| `CRAFT_TIMEOUT` | `30` | Seconds to wait for the turtle before giving up |
+| `MACHINE_CRAFT_TIMEOUT` | `30` | Seconds to wait for a machine recipe to complete |
+| `CLEAR_CRAFTER_BEFORE_CRAFT` | `false` | Pull leftover items from the turtle before each craft |
+| `PATTERN_SIZE` | `3` | Recipe grid size (3 for a standard 3×3 grid) |
+
+### SETUP tab — configure peripherals in-game
+
+Peripheral assignments are configured from the monitor UI under the **SETUP** tab — no file editing required. Assign each system role to a peripheral by choosing from your labeled peripherals or entering a name manually.
+
+| Role | Description |
+|------|-------------|
+| **Stock View** | Peripheral scanned to read available item counts |
+| **Stock In** | Peripheral items are pulled from for crafting |
+| **Stock Out** | Peripheral crafted items are delivered to |
+| **Crafter** | The crafting turtle peripheral |
+| **New Recipes** | Interface used to record new recipes (e.g. a barrel) |
+| **Monitor** | The touch-screen monitor |
+
+`Stock View`, `Stock In`, and `Stock Out` can all point to the same peripheral for a simple single-vault setup.
+
+## Local development
 
 Copy `.env.example` to `.env` and fill in your Minecraft save paths, then:
 
