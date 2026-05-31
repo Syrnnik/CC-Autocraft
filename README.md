@@ -21,16 +21,6 @@ Two recipe types are supported:
 - **Crafter** — standard shaped/shapeless recipes processed by a crafting turtle.
 - **Machine** — items are pushed to one or more machine peripherals; the program waits for the result to appear and pulls it back.
 
-## UI tabs
-
-| Tab | Description |
-|-----|-------------|
-| **RECIPES** | Browse saved recipes, craft, edit, or delete them |
-| **STOCK** | View current inventory counts |
-| **+RECIPE** | Record a new recipe from the crafting interface |
-| **LABELS** | Assign friendly names to peripherals (e.g. `depot_3` → `lava_input`) |
-| **SETUP** | Assign system roles to peripherals (stock, crafter, monitor, etc.) |
-
 ## Installation (in-game)
 
 On the **computer** (the one with the monitor):
@@ -52,6 +42,30 @@ wget run .../install.lua computer myfolder
 ```
 
 After installing, run `autocraft/monitor` on the computer and `autocraft/crafter` on the turtle.
+
+### Auto-start on boot
+
+To have the programs launch automatically when the computer or turtle turns on, rename the entry point to `startup.lua`:
+
+On the **computer**:
+```
+mv autocraft/monitor.lua startup.lua
+```
+
+On the **crafting turtle**:
+```
+mv autocraft/crafter.lua startup.lua
+```
+
+## UI tabs
+
+| Tab | Description |
+|-----|-------------|
+| **RECIPES** | Browse saved recipes, craft, edit, or delete them |
+| **STOCK** | View current inventory counts |
+| **+RECIPE** | Record a new recipe from the crafting interface |
+| **LABELS** | Assign friendly names to peripherals (e.g. `depot_3` → `lava_input`) |
+| **SETUP** | Assign system roles to peripherals (stock, crafter, monitor, etc.) |
 
 ## Components
 
