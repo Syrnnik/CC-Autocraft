@@ -1,6 +1,7 @@
 local Config = require("lib.config")
 local Crafting = require("lib.crafting")
 local Labels = require("lib.labels")
+local Roles  = require("lib.roles")
 local Network = require("lib.network")
 local Recipes = require("lib.recipes")
 local Stock = require("lib.stock")
@@ -32,6 +33,10 @@ local state = {
   -- search state
   searchQuery = "",
   searchMode = false,
+  -- setup tab state
+  setupPickerRole  = nil,
+  setupCustomMode  = false,
+  setupCustomInput = "",
   -- labels tab state
   labelsPage = 1,
   labelItems = {}, -- { name (peripheral), label }
@@ -126,7 +131,8 @@ local function drawTable(opts)
   local displayName = opts.displayName or function(n) return n end
   local rightW = opts.rightW or 9
 
-  local maxNameLen = 0
+  local hName  = opts.headerName  or "ITEM"
+  local maxNameLen = #hName  -- minimum: header must always fit
   for _, item in ipairs(items) do
     local dn = displayName(item.name)
     if #dn > maxNameLen then maxNameLen = #dn end
@@ -134,7 +140,6 @@ local function drawTable(opts)
   local itemW = math.max(0, math.min(maxNameLen, W - L - rightW))
   local xCount = L + itemW + 1
 
-  local hName  = opts.headerName  or "ITEM"
   local hCount = opts.headerCount or "COUNT"
   fill(headerY, colors.gray)
   at(math.max(L, xCount - #hName - 1), headerY, hName,  colors.lightGray, colors.gray)
@@ -235,6 +240,7 @@ local function drawTabs()
     { id = "stock",      label = " STOCK " },
     { id = "new_recipe", label = " +RECIPE " },
     { id = "labels",     label = " LABELS " },
+    { id = "setup",      label = " SETUP " },
   }
 
   for _, tab in ipairs(tabs) do
@@ -256,7 +262,12 @@ local function drawTabs()
         state.searchQuery = ""
         state.searchMode = false
         state.labelInputMode = false
-        if tab.id == "labels" then
+        state.setupPickerRole  = nil
+        state.setupCustomMode  = false
+        if tab.id == "setup" then
+          state.tab = "setup"
+          reloadLabels()
+        elseif tab.id == "labels" then
           state.tab = "labels"
           state.labelsPage = 1
           reloadLabels()
@@ -470,9 +481,29 @@ local function drawRecipesList()
           state.tab = "craft"
         end)
         mkBtn(xEdit, row, "Edit", colors.lightGray, colors.gray, function()
-          state.tab = "new_recipe"
+          state.tab        = "new_recipe"
           state.editTarget = captured
           state.pendingRecipe = nil
+          state.msg        = nil
+          reloadMachines()
+          local ok, recipe = pcall(Recipes.getRecipe, captured)
+          if ok then
+            state.type            = recipe.type or "crafter"
+            state.resultProcessor = recipe.resultProcessor
+            state.resultPickerOpen = false
+            state.selectedItemIdx  = nil
+            if state.type == "machine" then
+              state.machineItems = {}
+              for _, item in ipairs(recipe.items) do
+                table.insert(state.machineItems, {
+                  name      = item.name,
+                  count     = item.count,
+                  slot      = item.slot,
+                  processor = item.processor,
+                })
+              end
+            end
+          end
         end)
         mkBtn(xDel, row, "Del", colors.black, colors.red, function()
           state.deleteTarget = captured
@@ -483,6 +514,12 @@ local function drawRecipesList()
 end
 
 -- ── +RECIPE tab ─────────────────────────────────────────────
+
+-- Returns the display name for a machine peripheral: label if set, else stripped name.
+local function machineLabel(name)
+  if not name then return "?" end
+  return Labels.get(name) or stripMod(name)
+end
 
 -- Draw word-wrapped machine selector buttons.
 -- selected: currently selected machine name (or nil)
@@ -497,7 +534,8 @@ local function drawMachineList(startY, selected, onSelect)
   local x = L
   local y = startY
   for _, name in ipairs(state.availableMachines) do
-    local btnW = #name + 2
+    local lbl  = machineLabel(name)
+    local btnW = #lbl + 2
     if x > L and x + btnW - 1 > W then
       y = y + 1
       x = L
@@ -505,7 +543,7 @@ local function drawMachineList(startY, selected, onSelect)
     mkBtn(
       x,
       y,
-      name,
+      lbl,
       colors.black,
       name == selected and colors.cyan or colors.gray,
       function()
@@ -563,7 +601,7 @@ local function drawNewRecipe()
     at(
       L,
       cur,
-      "Items in " .. Config.NEW_RECIPE_INTERFACE_NAME .. ":",
+      "Items in " .. Roles.get("recipe_interface") .. ":",
       colors.white,
       colors.gray
     )
@@ -573,7 +611,7 @@ local function drawNewRecipe()
       at(
         L,
         cur,
-        Config.NEW_RECIPE_INTERFACE_NAME .. " is empty",
+        Roles.get("recipe_interface") .. " is empty",
         colors.gray,
         colors.black
       )
@@ -586,7 +624,7 @@ local function drawNewRecipe()
         -- Item row: "  name" or "  name > machine"
         local lineText
         if item.processor then
-          lineText = "  " .. item.name .. " > " .. item.processor
+          lineText = "  " .. item.name .. " > " .. machineLabel(item.processor)
         else
           lineText = "  " .. item.name
         end
@@ -602,13 +640,14 @@ local function drawNewRecipe()
         if isSelected then
           local x = L + 2
           for _, mname in ipairs(state.availableMachines) do
-            local btnW = #mname + 2
+            local lbl  = machineLabel(mname)
+            local btnW = #lbl + 2
             if x > L + 2 and x + btnW - 1 > W then
               cur = cur + 1
               x = L + 2
             end
             local captM = mname
-            mkBtn(x, cur, mname, colors.black, colors.gray, function()
+            mkBtn(x, cur, lbl, colors.black, colors.gray, function()
               state.machineItems[captI].processor = captM
               state.selectedItemIdx = nil
             end)
@@ -617,6 +656,14 @@ local function drawNewRecipe()
           cur = cur + 1
         end
       end
+    end
+
+    -- Reset button (editing only): re-read items from the interface barrel
+    if state.editTarget then
+      mkBtn(L, cur, "Reset", colors.white, colors.gray, function()
+        reloadMachineItems()
+      end)
+      cur = cur + 2
     end
 
     -- Result machine selector
@@ -628,7 +675,7 @@ local function drawNewRecipe()
       mkBtn(
         xLabel,
         cur,
-        state.resultProcessor,
+        machineLabel(state.resultProcessor),
         colors.black,
         colors.cyan,
         function()
@@ -656,13 +703,11 @@ local function drawNewRecipe()
         colors.black
       )
     else
-      at(
-        L,
-        cur,
-        "Place items in the recipe interface.",
-        colors.lightGray,
-        colors.black
-      )
+      local prefix = "Place items in "
+      local portLabel = Labels.get(Roles.get("recipe_interface"))
+                     or stripMod(Roles.get("recipe_interface") or "?")
+      at(L,            cur, prefix,    colors.lightGray, colors.black)
+      at(L + #prefix,  cur, portLabel, colors.yellow,    colors.black)
     end
     cur = cur + 2 -- hint + empty gap
   end
@@ -791,7 +836,7 @@ local function drawNewRecipe()
             Recipes.updateRecipeProcessor,
             state.editTarget,
             state.type,
-            Config.CRAFTER_NAME,
+            Roles.get("crafter"),
             nil,
             nil
           )
@@ -855,7 +900,7 @@ local function drawNewRecipe()
         return
       end
     end
-    local processor = state.type ~= "machine" and Config.CRAFTER_NAME or nil
+    local processor = state.type ~= "machine" and Roles.get("crafter") or nil
     local ok, err = pcall(
       Recipes.saveRecipe,
       pr.items,
@@ -921,12 +966,10 @@ local function drawCraftScreen()
 
   cur = cur + 2
 
-  local notStarted = not state.craftPlanning
-    and state.craftPlan == nil
-    and not state.craftMsgIsErr
+  local notStarted = not state.craftPlanning and state.craftPlan == nil
 
   if notStarted then
-    -- No craft in progress: Craft button + optional Done message
+    -- No craft in progress: Craft button + Done/error message below
     mkBtn(L, cur, "Craft", colors.black, colors.cyan, function()
       local name = state.craftItem
       local count = state.craftCount
@@ -943,7 +986,12 @@ local function drawCraftScreen()
             if redraw then redraw() end
           end,
           function(plan)
-            state.craftPlan = plan
+            -- Shallow copy: onStepDone removes from state.craftPlan,
+            -- but craftItem iterates the original plan table. Keeping
+            -- them as the same reference would corrupt the loop.
+            local copy = {}
+            for i, v in ipairs(plan) do copy[i] = v end
+            state.craftPlan = copy
             state.craftPlanning = false
             if redraw then redraw() end
           end,
@@ -962,7 +1010,9 @@ local function drawCraftScreen()
         else
           state.craftMsg = tostring(err)
           state.craftMsgIsErr = true
+          state.craftMsgIsDone = false
           state.craftPlanning = false
+          state.craftPlan = nil
           state.craftProgress = 0
         end
         reloadRecipes()
@@ -971,6 +1021,16 @@ local function drawCraftScreen()
 
     if state.craftMsgIsDone and state.craftMsg then
       at(L, cur + 2, truncate(state.craftMsg, W - L), colors.green, colors.black)
+    elseif state.craftMsgIsErr and state.craftMsg then
+      local lines = {}
+      for line in (state.craftMsg .. "\n"):gmatch("([^\n]*)\n") do
+        table.insert(lines, line)
+      end
+      for i, line in ipairs(lines) do
+        local row = cur + 1 + i
+        if row > H - 3 then break end
+        at(L, row, truncate(line, W - L), colors.red, colors.black)
+      end
     end
   else
     -- Craft started: header + content
@@ -1009,7 +1069,7 @@ local function drawCraftScreen()
   local barRow = H - 1
   local pct = string.format("%3d%%", state.craftProgress)
   local barX = L + #pct      -- [ sits right after percent text
-  local inner = W - barX - 1 -- bar width; ] lands exactly at W
+  local inner = W - barX - 2 -- bar width; ] lands at W-1 (1 char right margin)
   local filled = math.floor(state.craftProgress / 100 * inner)
   at(L,                 barRow, pct,                              colors.orange, colors.black)
   at(barX,              barRow, "[",                              colors.gray,   colors.black)
@@ -1053,10 +1113,9 @@ end
 local function drawLabels()
   for y = BODY_ROW, H do fill(y, colors.black) end
 
-  -- rightW=26: 12 label + 1 gap + 6 Edit + 1 gap + 5 Del + 1 margin
-  -- Button offsets from xCount: Edit/Save at +13, Del at +20, Cancel at +17
-  local LABEL_W = 12
-
+  -- rightW=26 layout from xCount:
+  --   normal:  [Edit](6) gap(1) label(19)              = 26
+  --   editing: [v](3) gap(1) [x](3) gap(1) input(18)  = 26
   drawTable({
     topY           = BODY_ROW,
     items          = state.labelItems,
@@ -1068,24 +1127,14 @@ local function drawLabels()
     headerName     = "Peripheral",
     headerCount    = "Label",
     alwaysShowPage = true,
-    countText  = function(item)
-      if state.labelInputMode and state.labelEditTarget == item.name then
-        return truncate(state.labelInput .. "_", LABEL_W)
-      end
-      return truncate(item.label ~= "" and item.label or "-", LABEL_W)
-    end,
-    countColor = function(item)
-      if state.labelInputMode and state.labelEditTarget == item.name then
-        return colors.yellow
-      end
-      return item.label ~= "" and colors.yellow or colors.lightGray
-    end,
+    countText  = function(_) return "" end,
+    countColor = function(_) return colors.black end,
     drawActions = function(item, row, rowBg, xCount)
       local editing   = state.labelInputMode and state.labelEditTarget == item.name
       local captName  = item.name
       local captLabel = item.label
       if editing then
-        mkBtn(xCount + LABEL_W + 1, row, "v", colors.black, colors.green, function()
+        mkBtn(xCount,     row, "v", colors.black, colors.green, function()
           if state.labelInput ~= "" then
             pcall(Labels.set, state.labelEditTarget, state.labelInput)
           else
@@ -1095,25 +1144,137 @@ local function drawLabels()
           state.labelEditTarget = nil
           reloadLabels()
         end)
-        mkBtn(xCount + LABEL_W + 5, row, "x", colors.black, colors.red, function()
+        mkBtn(xCount + 4, row, "x", colors.black, colors.red, function()
           state.labelInputMode  = false
           state.labelEditTarget = nil
         end)
+        local inputX = xCount + 8
+        at(inputX, row, truncate(state.labelInput .. "_", W - inputX),
+           colors.yellow, rowBg)
       else
-        mkBtn(xCount + LABEL_W + 1, row, "Edit", colors.lightGray, colors.gray, function()
+        mkBtn(xCount, row, "Edit", colors.lightGray, colors.gray, function()
           state.labelEditTarget = captName
           state.labelInput      = captLabel
           state.labelInputMode  = true
         end)
+        local labelX = xCount + 7
         if item.label ~= "" then
-          mkBtn(xCount + LABEL_W + 8, row, "Del", colors.black, colors.red, function()
-            pcall(Labels.delete, captName)
-            reloadLabels()
-          end)
+          at(labelX, row, truncate(item.label, W - labelX - 1), colors.yellow, rowBg)
+        else
+          at(labelX, row, "-", colors.lightGray, rowBg)
         end
       end
     end,
   })
+end
+
+-- ── Setup tab ───────────────────────────────────────────────
+
+local function drawSetup()
+  for y = BODY_ROW, H do fill(y, colors.black) end
+
+  fill(BODY_ROW, colors.gray)
+  at(L, BODY_ROW, "System Roles", colors.white, colors.gray)
+
+  local rolesData = Roles.getAll()
+  -- Layout: role name (right-aligned) | [Set] | value
+  -- Longest role name = "Recipe Iface" = 12 chars → xSet = L + 14
+  local xSet   = L + 14
+  local xValue = xSet + #" Set " + 1  -- value starts after [Set] button + gap
+
+  local cur = BODY_ROW + 1
+
+  for _, role in ipairs(Roles.LIST) do
+    if cur > H - 1 then break end
+    fill(cur, colors.black)
+
+    -- Role display name (right-aligned before [Set])
+    local disp = Roles.DISPLAY[role]
+    at(math.max(L, xSet - #disp - 1), cur, disp, colors.lightGray, colors.black)
+
+    -- Current assignment (after [Set])
+    local explicit = rolesData[role]
+    local valueStr, valueColor
+    if explicit then
+      local lbl = Labels.get(explicit)
+      valueStr   = lbl and (lbl .. " (" .. stripMod(explicit) .. ")") or stripMod(explicit)
+      valueColor = colors.yellow
+    else
+      valueStr   = "-"
+      valueColor = colors.lightGray
+    end
+    at(xValue, cur, truncate(valueStr, W - xValue - 1), valueColor, colors.black)
+
+    local captRole = role
+    mkBtn(xSet, cur, "Set", colors.black, colors.yellow, function()
+      state.setupPickerRole  = captRole
+      state.setupCustomMode  = false
+      state.setupCustomInput = ""
+    end)
+
+    cur = cur + 1
+
+    -- Inline picker
+    if state.setupPickerRole == role then
+      if state.setupCustomMode then
+        if cur <= H - 1 then
+          fill(cur, colors.black)
+          at(L + 2, cur, truncate(state.setupCustomInput .. "_", W - L - 4),
+             colors.yellow, colors.black)
+          cur = cur + 1
+        end
+      else
+        -- Labeled peripherals + Custom + Clear in a wrapping row
+        local RIGHT = W - 2
+        local function nextRow()
+          cur = cur + 1
+          if cur <= H - 1 then fill(cur, colors.black) end
+          return L + 2
+        end
+        local x = L + 2
+        if cur <= H - 1 then fill(cur, colors.black) end
+
+        for _, item in ipairs(state.labelItems) do
+          if item.label ~= "" then
+            local bw = #item.label + 2
+            if x + bw - 1 > RIGHT then x = nextRow() end
+            if cur > H - 1 then break end
+            local captPerif = item.name
+            mkBtn(x, cur, item.label, colors.black, colors.cyan, function()
+              pcall(Roles.set, captRole, captPerif)
+              state.setupPickerRole = nil
+            end)
+            x = x + bw + 1
+          end
+        end
+
+        -- Custom button
+        local cbw = #" Custom " + 1
+        if x + cbw - 1 > RIGHT then x = nextRow() end
+        if cur <= H - 1 then
+          mkBtn(x, cur, "Custom", colors.black, colors.gray, function()
+            state.setupCustomMode  = true
+            state.setupCustomInput = ""
+          end)
+          x = x + cbw
+        end
+
+        -- Clear button (only if explicitly set)
+        if explicit and cur <= H - 1 then
+          local clbw = #" Clear " + 1
+          if x + clbw - 1 > RIGHT then x = nextRow() end
+          if cur <= H - 1 then
+            mkBtn(x, cur, "Clear", colors.black, colors.red, function()
+              pcall(Roles.clear, captRole)
+              state.setupPickerRole = nil
+            end)
+          end
+        end
+
+        cur = cur + 1
+      end
+    end
+  end
 end
 
 -- ── Full redraw ─────────────────────────────────────────────
@@ -1131,6 +1292,8 @@ local function drawScreen()
     drawStockList()
   elseif state.tab == "labels" then
     drawLabels()
+  elseif state.tab == "setup" then
+    drawSetup()
   else
     drawNewRecipe()
   end
@@ -1188,12 +1351,11 @@ reloadStock = function()
 end
 
 reloadMachines = function()
-  local known = {
-    [Config.STOCK_NAME] = true,
-    [Config.CRAFTER_NAME] = true,
-    [Config.MONITOR_NAME] = true,
-    [Config.NEW_RECIPE_INTERFACE_NAME] = true,
-  }
+  local known = {}
+  for _, role in ipairs(Roles.LIST) do
+    local p = Roles.get(role)
+    if p then known[p] = true end
+  end
   local machines = {}
   for _, name in ipairs(peripheral.getNames()) do
     if
@@ -1241,7 +1403,7 @@ reloadLabels = function()
   for _, name in ipairs(peripheral.getNames()) do
     table.insert(perifs, name)
   end
-  table.sort(perifs)
+  table.sort(perifs, function(a, b) return stripMod(a) < stripMod(b) end)
 
   local data = Labels.getAll()
   local items = {}
@@ -1332,6 +1494,29 @@ function UI.run(monitorName)
         elseif key == keys.escape then
           state.labelInputMode = false
           state.labelEditTarget = nil
+          drawScreen()
+        end
+      end
+    elseif state.setupCustomMode then
+      if evType == "char" then
+        state.setupCustomInput = state.setupCustomInput .. ev[2]
+        drawScreen()
+      elseif evType == "key" then
+        local key = ev[2]
+        if key == keys.backspace then
+          if #state.setupCustomInput > 0 then
+            state.setupCustomInput = state.setupCustomInput:sub(1, -2)
+          end
+          drawScreen()
+        elseif key == keys.enter then
+          if state.setupCustomInput ~= "" then
+            pcall(Roles.set, state.setupPickerRole, state.setupCustomInput)
+          end
+          state.setupCustomMode = false
+          state.setupPickerRole = nil
+          drawScreen()
+        elseif key == keys.escape then
+          state.setupCustomMode = false
           drawScreen()
         end
       end
