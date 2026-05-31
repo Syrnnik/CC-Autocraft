@@ -31,18 +31,6 @@ Two recipe types are supported:
 | **LABELS** | Assign friendly names to peripherals (e.g. `depot_3` → `lava_input`) |
 | **SETUP** | Assign system roles to peripherals (stock, crafter, monitor, etc.) |
 
-## Components
-
-| File | Runs on | Role |
-|------|---------|------|
-| `monitor.lua` | Computer | Main entry point: launches the touch-screen UI |
-| `crafter.lua` | Turtle | Listens on rednet, calls `turtle.craft()` on demand |
-| `craft.lua` | Computer | CLI: craft an item by name and count |
-| `new_craft.lua` | Computer | CLI: record a new crafter recipe |
-| `all_recipes.lua` | Computer | CLI: list all saved recipes |
-| `get_recipe.lua` | Computer | CLI: show details of a single recipe |
-| `delete_recipe.lua` | Computer | CLI: delete a recipe by name |
-
 ## Installation (in-game)
 
 On the **computer** (the one with the monitor):
@@ -64,6 +52,18 @@ wget run .../install.lua computer myfolder
 ```
 
 After installing, run `autocraft/monitor` on the computer and `autocraft/crafter` on the turtle.
+
+## Components
+
+| File | Runs on | Role |
+|------|---------|------|
+| `monitor.lua` | Computer | Main entry point: launches the touch-screen UI |
+| `crafter.lua` | Turtle | Listens on rednet, calls `turtle.craft()` on demand |
+| `craft.lua` | Computer | CLI: craft an item by name and count |
+| `new_craft.lua` | Computer | CLI: record a new crafter recipe |
+| `all_recipes.lua` | Computer | CLI: list all saved recipes |
+| `get_recipe.lua` | Computer | CLI: show details of a single recipe |
+| `delete_recipe.lua` | Computer | CLI: delete a recipe by name |
 
 ## Configuration
 
