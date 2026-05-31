@@ -49,12 +49,12 @@ To have the programs launch automatically when the computer or turtle turns on, 
 
 On the **computer**:
 ```
-mv autocraft/monitor.lua startup.lua
+mv monitor.lua startup.lua
 ```
 
 On the **crafting turtle**:
 ```
-mv autocraft/crafter.lua startup.lua
+mv crafter.lua startup.lua
 ```
 
 ## UI tabs
