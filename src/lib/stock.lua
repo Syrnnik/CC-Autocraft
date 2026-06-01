@@ -186,6 +186,31 @@ function Stock.getItemsForMachineRecipe(recipe)
   return pushList
 end
 
+-- Returns the maximum safe batchSize for a crafter recipe based on item stack sizes.
+-- Each recipe slot maps to one crafter slot, so count*batch must not exceed maxCount.
+function Stock.getMaxBatchForRecipe(recipe)
+  local stockIn = getStockIn()
+  if not stockIn then return 1 end
+  local slotForName = {}
+  for slot, item in pairs(listItems(stockIn)) do
+    if not slotForName[item.name] then
+      slotForName[item.name] = slot
+    end
+  end
+  local maxBatch = math.huge
+  for _, item in pairs(recipe.items) do
+    local slot = slotForName[item.name]
+    if slot and item.count > 0 then
+      local detail = stockIn.getItemDetail(slot)
+      if detail and detail.maxCount then
+        local limit = math.floor(detail.maxCount / item.count)
+        if limit < maxBatch then maxBatch = limit end
+      end
+    end
+  end
+  return math.max(1, maxBatch == math.huge and 1 or maxBatch)
+end
+
 function Stock.getTotals()
   local stock = getStockView()
   if not stock then return {} end

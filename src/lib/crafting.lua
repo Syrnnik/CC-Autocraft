@@ -392,9 +392,15 @@ function Crafting.processCraft(recipe, batchSize, onEach)
       if onEach then onEach() end
     end
   else
-    local stockItems = Stock.getItemsForRecipe(recipe, batchSize)
-    Crafting.craft(stockItems, stockInName())
-    Crafting.getCraftedItem(stockOutName(), false)
+    local maxBatch = Stock.getMaxBatchForRecipe(recipe)
+    local done = 0
+    while done < batchSize do
+      local chunk = math.min(maxBatch, batchSize - done)
+      local stockItems = Stock.getItemsForRecipe(recipe, chunk)
+      Crafting.craft(stockItems, stockInName())
+      Crafting.getCraftedItem(stockOutName(), false)
+      done = done + chunk
+    end
     if onEach then onEach() end
   end
 
