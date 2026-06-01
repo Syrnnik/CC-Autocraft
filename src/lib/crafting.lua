@@ -400,8 +400,8 @@ function Crafting.processCraft(recipe, batchSize, onEach)
       Crafting.craft(stockItems, stockInName())
       Crafting.getCraftedItem(stockOutName(), false)
       done = done + chunk
+      if onEach then onEach() end
     end
-    if onEach then onEach() end
   end
 
   Logger.printSuccess(
@@ -437,13 +437,15 @@ function Crafting.craftItem(recipeName, count, onStep, onPlan, onStepDone)
   end
 
   -- Count total individual craft runs for per-item progress tracking.
-  -- Machine steps contribute craftsCount runs; crafter steps always 1 (whole batch at once).
+  -- Machine steps contribute craftsCount runs; crafter steps contribute
+  -- ceil(craftsCount / maxBatch) chunks (one progress tick per chunk).
   local totalRuns = 0
   for _, step in ipairs(plan) do
     if (step.recipe.type or "crafter") == "machine" then
       totalRuns = totalRuns + step.craftsCount
     else
-      totalRuns = totalRuns + 1
+      local maxBatch = Stock.getMaxBatchForRecipe(step.recipe)
+      totalRuns = totalRuns + math.ceil(step.craftsCount / maxBatch)
     end
   end
 
