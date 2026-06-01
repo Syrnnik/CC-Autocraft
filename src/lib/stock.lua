@@ -118,24 +118,26 @@ function Stock.getItemsForRecipe(recipe, batchSize)
     local needed = recipeItem.count * batchSize
     local slots = slotsByName[name] or {}
 
-    local assigned = false
+    local crafterSlot = Recipes.countCrafterSlot(recipeItem.slot)
+    local remaining = needed
     for _, entry in ipairs(slots) do
-      if entry.remaining >= needed then
-        entry.remaining = entry.remaining - needed
+      if remaining <= 0 then break end
+      local take = math.min(entry.remaining, remaining)
+      if take > 0 then
+        entry.remaining = entry.remaining - take
+        remaining = remaining - take
         table.insert(pushList, {
           name = name,
-          count = needed,
+          count = take,
           slot = entry.slot,
-          crafterSlot = Recipes.countCrafterSlot(recipeItem.slot),
+          crafterSlot = crafterSlot,
         })
-        assigned = true
-        break
       end
     end
 
-    if not assigned then
+    if remaining > 0 then
       Logger.raiseError(
-        string.format("Not enough '%s' in a single stock slot for batch", name)
+        string.format("Not enough '%s' in stock for batch", name)
       )
     end
   end
