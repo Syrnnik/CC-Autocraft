@@ -2,6 +2,7 @@ local Labels  = require("lib.labels")
 local Logger  = require("lib.logger")
 local Recipes = require("lib.recipes")
 local Roles   = require("lib.roles")
+local Utils   = require("lib.utils")
 
 local Stock = {}
 
@@ -229,13 +230,7 @@ function Stock.getMaxBatchForMachineRecipe(recipe)
   local function getPeripheral(processor)
     local port = Labels.resolvePort(processor)
     if not portCache[port] then
-      local p = peripheral.wrap(port)
-      if not p then
-        Logger.raiseError(
-          string.format("Processor '%s' not found (port: %s)", processor, tostring(port))
-        )
-      end
-      portCache[port] = p
+      portCache[port] = Utils.wrapPeripheral(port)
     end
     return portCache[port]
   end

@@ -1,5 +1,17 @@
 local Utils = {}
 
+-- Wraps a peripheral by name, raising a clear error if not found.
+function Utils.wrapPeripheral(name)
+  if not name then
+    error("Peripheral name is nil", 2)
+  end
+  local p = peripheral.wrap(name)
+  if not p then
+    error("Peripheral '" .. name .. "' not found or not connected", 2)
+  end
+  return p
+end
+
 function Utils.stripMod(name)
   return name:match("^[^:]+:(.+)") or name
 end

@@ -43,7 +43,7 @@ function Crafting.getSlotToPutItem()
 end
 
 function Crafting.pushItemsToCrafter(items, fromInterfaceName)
-  local fromInterface = peripheral.wrap(fromInterfaceName)
+  local fromInterface = Utils.wrapPeripheral(fromInterfaceName)
 
   for _, item in pairs(items) do
     local itemName = item.name
@@ -73,7 +73,7 @@ function Crafting.pushItemsToCrafter(items, fromInterfaceName)
 end
 
 function Crafting.returnRecipeItems(items, toInterfaceName)
-  local toInterface = peripheral.wrap(toInterfaceName)
+  local toInterface = Utils.wrapPeripheral(toInterfaceName)
 
   Logger.printWarning(string.format("Returning items to '%s'", toInterfaceName))
 
@@ -96,7 +96,7 @@ function Crafting.returnRecipeItems(items, toInterfaceName)
 end
 
 function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot)
-  local toInterface = peripheral.wrap(toInterfaceName)
+  local toInterface = Utils.wrapPeripheral(toInterfaceName)
 
   Logger.printInfo(
     string.format("Getting crafted item from '%s'", toInterfaceName)
@@ -131,7 +131,7 @@ end
 
 function Crafting.craft(items, fromInterfaceName)
   if clearCrafterBeforeCraft then
-    local fromInterface = peripheral.wrap(fromInterfaceName)
+    local fromInterface = Utils.wrapPeripheral(fromInterfaceName)
     for slot = 1, 16 do
       fromInterface.pullItems(getCrafter(), slot)
     end
@@ -160,7 +160,7 @@ end
 -- Returns items in the recipe interface pattern slots only (same grid used by
 -- getNewRecipeItems). Ignores items in other slots (e.g. decoration stacks).
 function Crafting.getInterfaceItems()
-  local listing = peripheral.wrap(interfaceName()).list()
+  local listing = Utils.wrapPeripheral(interfaceName()).list()
   local items = {}
   for _, slot in ipairs(patternSlots()) do
     local item = listing[slot]
@@ -174,7 +174,7 @@ end
 -- Push machineItems from the recipe interface to their processors, wait for
 -- a result to appear in resultProcessor, pull it back, then clear all machines.
 function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
-  local interface = peripheral.wrap(interfaceName())
+  local interface = Utils.wrapPeripheral(interfaceName())
 
   -- Items placed directly into the result machine (ignored during polling
   -- until they are transformed into the actual result).
@@ -208,7 +208,7 @@ function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
   local crafted = nil
 
   for _ = 1, steps do
-    local listing = peripheral.wrap(resultProcessor).list()
+    local listing = Utils.wrapPeripheral(resultProcessor).list()
     local resultSlot = nil
     for s, sItem in pairs(listing) do
       if not inputsToResult[sItem.name] then
@@ -229,7 +229,7 @@ function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
   for _, item in pairs(machineItems) do
     if not seen[item.processor] then
       seen[item.processor] = true
-      for slot, _ in pairs(peripheral.wrap(item.processor).list()) do
+      for slot, _ in pairs(Utils.wrapPeripheral(item.processor).list()) do
         interface.pullItems(item.processor, slot)
       end
     end
@@ -251,29 +251,15 @@ end
 -- onEach(): called after each individual result is collected (for progress tracking).
 function Crafting.craftMachine(recipe, batchSize, onEach)
   batchSize = batchSize or 1
-  local stockIn  = peripheral.wrap(stockInName())
-  local stockOut = peripheral.wrap(stockOutName())
+  local stockIn  = Utils.wrapPeripheral(stockInName())
+  local stockOut = Utils.wrapPeripheral(stockOutName())
   local pushList = Stock.getItemsForMachineRecipe(recipe, batchSize)
 
-  -- Resolve labels → port names once, with clear errors if not found
+  -- Resolve labels → port names once (Utils.wrapPeripheral will error if not found)
   local resultPort = Labels.resolvePort(recipe.resultProcessor)
-  if not peripheral.isPresent(resultPort) then
-    Logger.raiseError(
-      string.format("Result processor '%s' not found (port: %s)",
-        recipe.resultProcessor, tostring(resultPort))
-    )
-  end
   local portCache  = {}
   local function resolveItemPort(proc)
-    if not portCache[proc] then
-      local port = Labels.resolvePort(proc)
-      if not peripheral.isPresent(port) then
-        Logger.raiseError(
-          string.format("Processor '%s' not found (port: %s)", proc, tostring(port))
-        )
-      end
-      portCache[proc] = port
-    end
+    if not portCache[proc] then portCache[proc] = Labels.resolvePort(proc) end
     return portCache[proc]
   end
 
@@ -302,7 +288,7 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
   while collected < batchSize do
     local found = false
     for _ = 1, steps do
-      local listing    = peripheral.wrap(resultPort).list()
+      local listing    = Utils.wrapPeripheral(resultPort).list()
       local resultSlot = nil
       for s, sItem in pairs(listing) do
         if not inputsToResult[sItem.name] then
@@ -333,7 +319,7 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
     if not seen[item.processor] then
       seen[item.processor] = true
       local port = resolveItemPort(item.processor)
-      for slot, _ in pairs(peripheral.wrap(port).list()) do
+      for slot, _ in pairs(Utils.wrapPeripheral(port).list()) do
         stockOut.pullItems(port, slot)
       end
     end
@@ -342,7 +328,7 @@ end
 
 -- Pull all items from the crafter back to the recipe interface
 function Crafting.clearCrafter()
-  local interface = peripheral.wrap(interfaceName())
+  local interface = Utils.wrapPeripheral(interfaceName())
   for slot = 1, 16 do
     interface.pullItems(getCrafter(), slot)
   end
@@ -352,7 +338,7 @@ end
 -- Push recipe pattern slots (and crafted-item slot) from the recipe interface
 -- back to stock. Only touches the slots actually used for recipe input.
 function Crafting.clearRecipeInterface()
-  local stock = peripheral.wrap(stockOutName())
+  local stock = Utils.wrapPeripheral(stockOutName())
   for _, slot in ipairs(patternSlots()) do
     stock.pullItems(interfaceName(), slot)
   end
