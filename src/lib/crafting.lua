@@ -1,4 +1,5 @@
 local Config = require("lib.config")
+local Labels = require("lib.labels")
 local Logger = require("lib.logger")
 local Network = require("lib.network")
 local Planner = require("lib.planner")
@@ -250,6 +251,14 @@ function Crafting.craftMachine(recipe)
   local stockOut = peripheral.wrap(stockOutName())
   local pushList = Stock.getItemsForMachineRecipe(recipe)
 
+  -- Resolve labels → port names once (recipe may store labels instead of ports)
+  local resultPort = Labels.resolvePort(recipe.resultProcessor)
+  local portCache = {}
+  local function resolveItemPort(p)
+    if not portCache[p] then portCache[p] = Labels.resolvePort(p) end
+    return portCache[p]
+  end
+
   -- Items placed directly into the result machine (ignored during polling)
   local inputsToResult = {}
   for _, item in pairs(recipe.items) do
@@ -259,14 +268,11 @@ function Crafting.craftMachine(recipe)
   end
 
   for _, item in pairs(pushList) do
-    Logger.printInfo(
-      string.format("Pushing '%s' to '%s'", item.name, item.processor)
-    )
-    local pushed = stockIn.pushItems(item.processor, item.slot, item.count)
+    local port = resolveItemPort(item.processor)
+    Logger.printInfo(string.format("Pushing '%s' to '%s'", item.name, port))
+    local pushed = stockIn.pushItems(port, item.slot, item.count)
     if pushed == 0 then
-      Logger.raiseError(
-        string.format("Failed to push '%s' to '%s'", item.name, item.processor)
-      )
+      Logger.raiseError(string.format("Failed to push '%s' to '%s'", item.name, port))
     end
   end
 
@@ -275,7 +281,7 @@ function Crafting.craftMachine(recipe)
   local got = false
 
   for _ = 1, steps do
-    local listing = peripheral.wrap(recipe.resultProcessor).list()
+    local listing = peripheral.wrap(resultPort).list()
     local resultSlot = nil
     for s, sItem in pairs(listing) do
       if not inputsToResult[sItem.name] then
@@ -284,8 +290,8 @@ function Crafting.craftMachine(recipe)
       end
     end
     if resultSlot then
-      for s, _ in pairs(peripheral.wrap(recipe.resultProcessor).list()) do
-        stockOut.pullItems(recipe.resultProcessor, s)
+      for s, _ in pairs(peripheral.wrap(resultPort).list()) do
+        stockOut.pullItems(resultPort, s)
       end
       got = true
       break
@@ -298,16 +304,15 @@ function Crafting.craftMachine(recipe)
   for _, item in pairs(recipe.items) do
     if not seen[item.processor] then
       seen[item.processor] = true
-      for slot, _ in pairs(peripheral.wrap(item.processor).list()) do
-        stockOut.pullItems(item.processor, slot)
+      local port = resolveItemPort(item.processor)
+      for slot, _ in pairs(peripheral.wrap(port).list()) do
+        stockOut.pullItems(port, slot)
       end
     end
   end
 
   if not got then
-    Logger.raiseError(
-      "Machine craft timed out: no result from " .. recipe.resultProcessor
-    )
+    Logger.raiseError("Machine craft timed out: no result from " .. resultPort)
   end
 end
 

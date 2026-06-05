@@ -1,6 +1,13 @@
-local Config = require("lib.config")
-local Logger = require("lib.logger")
-local Roles  = require("lib.roles")
+local Config  = require("lib.config")
+local Labels  = require("lib.labels")
+local Logger  = require("lib.logger")
+local Roles   = require("lib.roles")
+
+-- Returns the label for a peripheral port if one is set, else returns the port as-is.
+local function toLabelOrPort(port)
+  if not port then return nil end
+  return Labels.get(port) or port
+end
 
 local patternSize = Config.PATTERN_SIZE
 local crafterRowSize = Config.CRAFTER_ROW_SIZE
@@ -190,32 +197,32 @@ function Recipes.saveRecipe(
   if type == "machine" then
     for _, item in ipairs(recipeItems) do
       table.insert(items, {
-        name = item.name,
-        count = item.count,
-        processor = item.processor,
+        name      = item.name,
+        count     = item.count,
+        processor = toLabelOrPort(item.processor),
       })
     end
   else
     for _, item in ipairs(recipeItems) do
       table.insert(items, {
-        name = item.name,
+        name  = item.name,
         count = item.count,
-        slot = item.recipeSlot,
+        slot  = item.recipeSlot,
       })
     end
   end
 
   local recipe = {
-    name = craftedItem.name,
+    name  = craftedItem.name,
     count = craftedItem.count,
     items = items,
-    type = type or "crafter",
+    type  = type or "crafter",
   }
 
   if type == "machine" then
-    recipe.resultProcessor = resultProcessor
+    recipe.resultProcessor = toLabelOrPort(resultProcessor)
   else
-    recipe.processor = processor or Roles.get("crafter")
+    recipe.processor = toLabelOrPort(processor or Roles.get("crafter"))
   end
 
   Recipes.addNewRecipe(recipe)
@@ -240,17 +247,17 @@ function Recipes.updateRecipeProcessor(
   recipe.type = type
 
   if type == "machine" then
-    recipe.resultProcessor = resultProcessor
+    recipe.resultProcessor = toLabelOrPort(resultProcessor)
     recipe.processor = nil
     if itemProcessors then
       for _, item in ipairs(recipe.items) do
         if itemProcessors[item.name] then
-          item.processor = itemProcessors[item.name]
+          item.processor = toLabelOrPort(itemProcessors[item.name])
         end
       end
     end
   else
-    recipe.processor = processor or Roles.get("crafter")
+    recipe.processor = toLabelOrPort(processor or Roles.get("crafter"))
     recipe.resultProcessor = nil
   end
 
