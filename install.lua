@@ -26,11 +26,13 @@ local COMPUTER_FILES = {
   "lib/ui.lua",
   "lib/utils.lua",
   "all_recipes.lua",
+  "checklist.lua",
   "craft.lua",
   "delete_recipe.lua",
   "device_id.lua",
   "get_recipe.lua",
   "main.lua",
+  "migrate_recipes.lua",
   "monitor.lua",
   "new_craft.lua",
 }
