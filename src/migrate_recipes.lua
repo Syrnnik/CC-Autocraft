@@ -6,6 +6,9 @@
 local Labels  = require("lib.labels")
 local Recipes = require("lib.recipes")
 local Roles   = require("lib.roles")
+local Utils   = require("lib.utils")
+
+local stripMod = Utils.stripMod
 
 -- ── Drawing helpers ──────────────────────────────────────────
 
@@ -34,10 +37,6 @@ end
 local function truncate(s, maxLen)
   if #s <= maxLen then return s end
   return s:sub(1, maxLen - 3) .. "..."
-end
-
-local function stripMod(name)
-  return name:match("^[^:]+:(.+)") or name
 end
 
 -- ── State ────────────────────────────────────────────────────

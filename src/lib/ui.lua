@@ -5,6 +5,7 @@ local Roles  = require("lib.roles")
 local Network = require("lib.network")
 local Recipes = require("lib.recipes")
 local Stock = require("lib.stock")
+local Utils = require("lib.utils")
 
 local UI = {}
 
@@ -75,13 +76,8 @@ local BODY_ROW = TABS_ROW + 1 -- 2  (first content row)
 
 -- ── Mod helpers ────────────────────────────────────────────
 
-local function getMod(name)
-  return name:match("^([^:]+):") or "other"
-end
-
-local function stripMod(name)
-  return name:match("^[^:]+:(.+)") or name
-end
+local getMod   = Utils.getMod
+local stripMod = Utils.stripMod
 
 -- ── Drawing primitives ──────────────────────────────────────
 

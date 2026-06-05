@@ -1,5 +1,13 @@
 local Utils = {}
 
+function Utils.stripMod(name)
+  return name:match("^[^:]+:(.+)") or name
+end
+
+function Utils.getMod(name)
+  return name:match("^([^:]+):") or "other"
+end
+
 function Utils.serializeTable(tbl)
   local serialized = textutils.serialize(tbl)
   return serialized
