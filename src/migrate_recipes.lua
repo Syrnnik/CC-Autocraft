@@ -56,11 +56,17 @@ local state = {
 -- Collect unique processor values from all recipes, tracking the first recipe
 -- name that references each value so the user can identify what it belongs to.
 local function collectPorts()
-  local recipes = Recipes.getAllRecipes()
+  local recipes  = Recipes.getAllRecipes()
+  local allLabels = Labels.getAll()
+  -- Build a set of known label strings for fast lookup
+  local labelSet = {}
+  for _, lbl in pairs(allLabels) do labelSet[lbl] = true end
+
   local seen, ports = {}, {}
   for _, recipe in pairs(recipes) do
     local function add(v, itemName)
-      if v and not seen[v] then
+      -- Skip if already a label (already migrated)
+      if v and not seen[v] and not labelSet[v] then
         seen[v] = true
         table.insert(ports, {
           value       = v,
