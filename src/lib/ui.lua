@@ -1202,22 +1202,27 @@ end
 local function drawLabels()
   for y = BODY_ROW, H do fill(y, colors.black) end
 
-  -- rightW=26 layout from xCount:
-  --   normal:  [Edit](6) gap(1) label(19)              = 26
-  --   editing: [v](3) gap(1) [x](3) gap(1) input(18)  = 26
+  -- rightW=31 layout from xCount:
+  --   normal (no label):  [Edit](6) gap(1) -(1)                     = 8  (rest empty)
+  --   normal (has label): [Edit](6) gap(1) [Del](5) gap(1) label    = 13 + label
+  --   editing:            [v](3) gap(1) [x](3) gap(1) input         = 8  + input
   drawTable({
     topY           = BODY_ROW,
     items          = state.labelItems,
     page           = state.labelsPage,
     setPage        = function(p) state.labelsPage = p end,
     displayName    = stripMod,
-    rightW         = 26,
+    rightW         = 31,
     emptyMsg       = "No peripherals found",
     headerName     = "Peripheral",
     headerCount    = "Label",
     alwaysShowPage = true,
     countText  = function(_) return "" end,
     countColor = function(_) return colors.black end,
+    -- Stale entries (port not connected) shown in red
+    rowFg = function(item)
+      return (item.connected == false) and colors.red or colors.white
+    end,
     drawActions = function(item, row, rowBg, xCount)
       local editing   = state.labelInputMode and state.labelEditTarget == item.name
       local captName  = item.name
@@ -1246,11 +1251,16 @@ local function drawLabels()
           state.labelInput      = captLabel
           state.labelInputMode  = true
         end)
-        local labelX = xCount + 7
+        local xAfterEdit = xCount + 7
         if item.label ~= "" then
+          mkBtn(xAfterEdit, row, "Del", colors.white, colors.red, function()
+            pcall(Labels.delete, captName)
+            reloadLabels()
+          end)
+          local labelX = xAfterEdit + #" Del " + 1
           at(labelX, row, truncate(item.label, W - labelX - 1), colors.yellow, rowBg)
         else
-          at(labelX, row, "-", colors.lightGray, rowBg)
+          at(xAfterEdit, row, "-", colors.lightGray, rowBg)
         end
       end
     end,
@@ -1677,17 +1687,31 @@ reloadChecklist = function()
 end
 
 reloadLabels = function()
-  local perifs = {}
+  local data         = Labels.getAll()
+  local connectedSet = {}
   for _, name in ipairs(peripheral.getNames()) do
-    table.insert(perifs, name)
+    connectedSet[name] = true
   end
-  table.sort(perifs, function(a, b) return stripMod(a) < stripMod(b) end)
 
-  local data = Labels.getAll()
-  local items = {}
-  for _, name in ipairs(perifs) do
-    table.insert(items, { name = name, label = data[name] or "" })
+  -- Connected peripherals (with or without label)
+  local connected = {}
+  for name in pairs(connectedSet) do
+    table.insert(connected, { name = name, label = data[name] or "", connected = true })
   end
+  table.sort(connected, function(a, b) return stripMod(a.name) < stripMod(b.name) end)
+
+  -- Stale labels whose port is no longer connected
+  local stale = {}
+  for port, label in pairs(data) do
+    if not connectedSet[port] then
+      table.insert(stale, { name = port, label = label, connected = false })
+    end
+  end
+  table.sort(stale, function(a, b) return a.label < b.label end)
+
+  local items = {}
+  for _, item in ipairs(connected) do table.insert(items, item) end
+  for _, item in ipairs(stale)     do table.insert(items, item) end
   state.labelItems = items
 end
 
