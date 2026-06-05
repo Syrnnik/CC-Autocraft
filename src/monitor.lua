@@ -7,4 +7,8 @@ local function findMonitor()
   end
 end
 
-UI.run(Roles.get("monitor") or findMonitor())
+local monName = Roles.getPort("monitor")
+if not monName or not peripheral.isPresent(monName) then
+  monName = findMonitor()
+end
+UI.run(monName)

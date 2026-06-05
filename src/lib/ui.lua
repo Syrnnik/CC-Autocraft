@@ -1288,18 +1288,19 @@ local function drawSetup()
     -- Current assignment (after [Set])
     local explicit = rolesData[role]
     if explicit then
-      local lbl     = Labels.get(explicit)
-      local portStr = "(" .. stripMod(explicit) .. ")"
+      -- explicit may be a label (new) or port (old). Resolve port for display.
+      local port    = Labels.findPort(explicit) or (peripheral.isPresent(explicit) and explicit)
       local maxW    = W - xValue - 1
-      if lbl then
-        local lblTrunc = truncate(lbl, maxW - #portStr - 1)
+      if port then
+        local portStr  = "(" .. stripMod(port) .. ")"
+        local lblTrunc = truncate(explicit, maxW - #portStr - 1)
         at(xValue, cur, lblTrunc, colors.yellow, colors.black)
         local xPort = xValue + #lblTrunc + 1
         if xPort <= W - 1 then
           at(xPort, cur, truncate(portStr, W - xPort), colors.lightGray, colors.black)
         end
       else
-        at(xValue, cur, truncate(portStr, maxW), colors.yellow, colors.black)
+        at(xValue, cur, truncate(explicit, maxW), colors.yellow, colors.black)
       end
     else
       at(xValue, cur, "-", colors.lightGray, colors.black)
@@ -1339,9 +1340,9 @@ local function drawSetup()
             local bw = #item.label + 2
             if x + bw - 1 > RIGHT then x = nextRow() end
             if cur > H - 1 then break end
-            local captPerif = item.name
+            local captLabel = item.label
             mkBtn(x, cur, item.label, colors.black, colors.cyan, function()
-              pcall(Roles.set, captRole, captPerif)
+              pcall(Roles.set, captRole, captLabel)
               state.setupPickerRole = nil
             end)
             x = x + bw + 1
@@ -1413,7 +1414,7 @@ local function drawChecklist()
   end
 
   local subTab  = state.checklistSubTab
-  local outName = Roles.get("materials_out")
+  local outName = Roles.getPort("materials_out")
   local hasOut  = outName ~= nil
 
   -- Read materials_out every draw so status is always current without explicit Refresh.
@@ -1623,7 +1624,7 @@ end
 reloadMachines = function()
   local known = {}
   for _, role in ipairs(Roles.LIST) do
-    local p = Roles.get(role)
+    local p = Roles.getPort(role)
     if p then known[p] = true end
   end
   local machines = {}
