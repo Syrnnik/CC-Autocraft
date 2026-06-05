@@ -152,9 +152,10 @@ function Stock.getItemsForRecipe(recipe, batchSize)
   return pushList
 end
 
--- Returns push list for machine recipes: one slot per recipe item,
--- routed to the item's assigned processor.
-function Stock.getItemsForMachineRecipe(recipe)
+-- Returns push list for machine recipes scaled by batchSize,
+-- spreading items across multiple stock slots when needed.
+function Stock.getItemsForMachineRecipe(recipe, batchSize)
+  batchSize = batchSize or 1
   local slotsByName = {}
   local stockIn2 = getStockIn()
   for slot, item in pairs(listItems(stockIn2)) do
@@ -167,26 +168,28 @@ function Stock.getItemsForMachineRecipe(recipe)
 
   local pushList = {}
   for _, recipeItem in pairs(recipe.items) do
-    local name = recipeItem.name
-    local slots = slotsByName[name] or {}
+    local name     = recipeItem.name
+    local needed   = recipeItem.count * batchSize
+    local slots    = slotsByName[name] or {}
+    local remaining = needed
 
-    local assigned = false
     for _, entry in ipairs(slots) do
-      if entry.remaining >= 1 then
-        entry.remaining = entry.remaining - 1
+      if remaining <= 0 then break end
+      local take = math.min(entry.remaining, remaining)
+      if take > 0 then
+        entry.remaining = entry.remaining - take
+        remaining       = remaining - take
         table.insert(pushList, {
-          name = name,
-          count = 1,
-          slot = entry.slot,
+          name      = name,
+          count     = take,
+          slot      = entry.slot,
           processor = recipeItem.processor,
         })
-        assigned = true
-        break
       end
     end
 
-    if not assigned then
-      Logger.raiseError(string.format("Stock has no '%s'", name))
+    if remaining > 0 then
+      Logger.raiseError(string.format("Not enough '%s' in stock for machine batch", name))
     end
   end
 
@@ -215,6 +218,49 @@ function Stock.getMaxBatchForRecipe(recipe)
       end
     end
   end
+  return math.max(1, maxBatch == math.huge and 1 or maxBatch)
+end
+
+-- Returns the maximum batch size for a machine recipe based on how many
+-- items each processor can hold (empty slots × stack size per item).
+function Stock.getMaxBatchForMachineRecipe(recipe)
+  local portCache = {}
+  local function getPeripheral(processor)
+    local port = Labels.resolvePort(processor)
+    if not portCache[port] then portCache[port] = peripheral.wrap(port) end
+    return portCache[port]
+  end
+
+  local maxBatch = math.huge
+  for _, item in ipairs(recipe.items) do
+    if item.count > 0 then
+      local p = getPeripheral(item.processor)
+      if p then
+        local list  = p.list()
+        local size  = p.size and p.size() or 9
+        local capacity = 0
+        for slot = 1, size do
+          local slotItem = list[slot]
+          if not slotItem then
+            -- Empty slot: assume default stack size of 64
+            capacity = capacity + 64
+          elseif slotItem.name == item.name then
+            -- Same item: remaining stack space
+            local maxCount = 64
+            if p.getItemDetail then
+              local detail = p.getItemDetail(slot)
+              if detail and detail.maxCount then maxCount = detail.maxCount end
+            end
+            capacity = capacity + (maxCount - slotItem.count)
+          end
+          -- Slot occupied by a different item: no space for our item
+        end
+        local limit = math.floor(capacity / item.count)
+        if limit < maxBatch then maxBatch = limit end
+      end
+    end
+  end
+
   return math.max(1, maxBatch == math.huge and 1 or maxBatch)
 end
 

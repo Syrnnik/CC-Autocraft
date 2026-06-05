@@ -246,14 +246,18 @@ end
 
 -- Execute one machine craft cycle from stock: push items to their processors,
 -- wait for the result, pull it to stock, then clear all machines.
-function Crafting.craftMachine(recipe)
+-- batchSize: how many recipe cycles to run in one call.
+--   Items are pushed to processors all at once; results are pulled one by one.
+-- onEach(): called after each individual result is collected (for progress tracking).
+function Crafting.craftMachine(recipe, batchSize, onEach)
+  batchSize = batchSize or 1
   local stockIn  = peripheral.wrap(stockInName())
   local stockOut = peripheral.wrap(stockOutName())
-  local pushList = Stock.getItemsForMachineRecipe(recipe)
+  local pushList = Stock.getItemsForMachineRecipe(recipe, batchSize)
 
-  -- Resolve labels → port names once (recipe may store labels instead of ports)
+  -- Resolve labels → port names once
   local resultPort = Labels.resolvePort(recipe.resultProcessor)
-  local portCache = {}
+  local portCache  = {}
   local function resolveItemPort(p)
     if not portCache[p] then portCache[p] = Labels.resolvePort(p) end
     return portCache[p]
@@ -267,39 +271,49 @@ function Crafting.craftMachine(recipe)
     end
   end
 
+  -- Push all items for the full batch at once
   for _, item in pairs(pushList) do
     local port = resolveItemPort(item.processor)
-    Logger.printInfo(string.format("Pushing '%s' to '%s'", item.name, port))
+    Logger.printInfo(string.format("Pushing '%s' x%d to '%s'", item.name, item.count, port))
     local pushed = stockIn.pushItems(port, item.slot, item.count)
     if pushed == 0 then
       Logger.raiseError(string.format("Failed to push '%s' to '%s'", item.name, port))
     end
   end
 
-  -- Poll: wait until a non-input item appears in resultProcessor
-  local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
-  local got = false
+  -- Collect batchSize results one by one so progress updates after each
+  local steps     = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
+  local collected = 0
 
-  for _ = 1, steps do
-    local listing = peripheral.wrap(resultPort).list()
-    local resultSlot = nil
-    for s, sItem in pairs(listing) do
-      if not inputsToResult[sItem.name] then
-        resultSlot = s
+  while collected < batchSize do
+    local found = false
+    for _ = 1, steps do
+      local listing    = peripheral.wrap(resultPort).list()
+      local resultSlot = nil
+      for s, sItem in pairs(listing) do
+        if not inputsToResult[sItem.name] then
+          resultSlot = s
+          break
+        end
+      end
+      if resultSlot then
+        stockOut.pullItems(resultPort, resultSlot)
+        collected = collected + 1
+        if onEach then onEach() end
+        found = true
         break
       end
+      os.sleep(0.5)
     end
-    if resultSlot then
-      for s, _ in pairs(peripheral.wrap(resultPort).list()) do
-        stockOut.pullItems(resultPort, s)
-      end
-      got = true
-      break
+    if not found then
+      Logger.raiseError(
+        string.format("Machine craft timed out: got %d/%d from %s",
+          collected, batchSize, resultPort)
+      )
     end
-    os.sleep(0.5)
   end
 
-  -- Always clear all machines (whether success or timeout)
+  -- Always clear all machines
   local seen = {}
   for _, item in pairs(recipe.items) do
     if not seen[item.processor] then
@@ -309,10 +323,6 @@ function Crafting.craftMachine(recipe)
         stockOut.pullItems(port, slot)
       end
     end
-  end
-
-  if not got then
-    Logger.raiseError("Machine craft timed out: no result from " .. resultPort)
   end
 end
 
@@ -392,9 +402,12 @@ function Crafting.processCraft(recipe, batchSize, onEach)
   )
 
   if recipeType == "machine" then
-    for _ = 1, batchSize do
-      Crafting.craftMachine(recipe)
-      if onEach then onEach() end
+    local maxMachineBatch = Stock.getMaxBatchForMachineRecipe(recipe)
+    local done = 0
+    while done < batchSize do
+      local chunk = math.min(maxMachineBatch, batchSize - done)
+      Crafting.craftMachine(recipe, chunk, onEach)
+      done = done + chunk
     end
   else
     local maxBatch = Stock.getMaxBatchForRecipe(recipe)
