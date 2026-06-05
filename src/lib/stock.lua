@@ -16,6 +16,13 @@ local function getStockView()
   return name and peripheral.wrap(name) or nil
 end
 
+-- Returns item detail from a peripheral, preferring getStockItemDetail (ME/custom
+-- storage systems) over the standard getItemDetail.
+local function getItemDetail(p, slot)
+  if p.getStockItemDetail then return p.getStockItemDetail(slot) end
+  return p.getItemDetail(slot)
+end
+
 local function getStockIn()
   local name = Roles.get("stock_in")
   return name and peripheral.wrap(name) or nil
@@ -237,7 +244,7 @@ function Stock.getDurabilityAwareTotals()
     if item.count > 1 then
       totals[item.name] = (totals[item.name] or 0) + item.count
     else
-      local detail = stock.getItemDetail(slot)
+      local detail = getItemDetail(stock, slot)
       if detail then
         local md = detail.maxDamage or 0
         if maxDmg[detail.name] == nil then
@@ -254,6 +261,91 @@ function Stock.getDurabilityAwareTotals()
   end
 
   return totals, maxDmg
+end
+
+-- Returns all checklist items with their status relative to current stock and recipes.
+-- Each entry: { name, needed, status }
+-- status: "done" | "in_stock" | "to_craft" | "missing"
+-- Returns nil if no clipboard found.
+function Stock.getChecklistStatus()
+  local clipboard = peripheral.find("create:clipboard")
+  if not clipboard then return nil end
+
+  local rawItems = clipboard.getItemEntries()
+  if not rawItems then return {} end
+
+  local totals     = Stock.getTotals()
+  local allRecipes = Recipes.getAllRecipes()
+
+  local result = {}
+  for _, entry in ipairs(rawItems) do
+    local name   = entry.item.name
+    local needed = entry.itemAmount or 0
+    local status
+    if entry.checked then
+      status = "done"
+    elseif (totals[name] or 0) >= needed then
+      status = "in_stock"
+    elseif allRecipes[name] then
+      status = "to_craft"
+    else
+      status = "missing"
+    end
+    table.insert(result, { name = name, needed = needed, status = status })
+  end
+
+  return result
+end
+
+-- Pulls "in_stock" checklist items from stock_in and pushes them to materials_out.
+-- Transfers as much as available; partial transfers are silently accepted.
+-- Returns transferred ({ name, count }) and notFound ({ name, count }) lists.
+function Stock.transferChecklistItems()
+  local items = Stock.getChecklistStatus()
+  if items == nil then
+    Logger.raiseError("No clipboard found (create:clipboard)")
+  end
+
+  local stockIn = getStockIn()
+  if not stockIn then Logger.raiseError("No stock_in configured") end
+
+  local outName = Roles.get("materials_out")
+  if not outName then Logger.raiseError("No materials_out configured") end
+
+  local slotsByName = {}
+  for slot, item in pairs(listItems(stockIn)) do
+    local name = item.name
+    if not slotsByName[name] then slotsByName[name] = {} end
+    table.insert(slotsByName[name], { slot = slot, remaining = item.count })
+  end
+
+  local transferred = {}
+  local notFound = {}
+
+  for _, item in ipairs(items) do
+    if item.status == "in_stock" then
+      local name = item.name
+      local needed = item.needed
+      local slots = slotsByName[name] or {}
+      local remaining = needed
+
+      for _, entry in ipairs(slots) do
+        if remaining <= 0 then break end
+        local take = math.min(entry.remaining, remaining)
+        if take > 0 then
+          local moved = stockIn.pushItems(outName, entry.slot, take)
+          entry.remaining = entry.remaining - moved
+          remaining = remaining - moved
+        end
+      end
+
+      local moved = needed - remaining
+      if moved > 0 then table.insert(transferred, { name = name, count = moved }) end
+      if remaining > 0 then table.insert(notFound, { name = name, count = remaining }) end
+    end
+  end
+
+  return transferred, notFound
 end
 
 return Stock

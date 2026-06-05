@@ -8,6 +8,7 @@ Roles.LIST = {
   "crafter",
   "recipe_interface",
   "monitor",
+  "materials_out",
 }
 
 Roles.DISPLAY = {
@@ -17,6 +18,7 @@ Roles.DISPLAY = {
   crafter          = "Crafter",
   recipe_interface = "New Recipes",
   monitor          = "Monitor",
+  materials_out    = "Materials Out",
 }
 
 local path   = "data/roles.json"
