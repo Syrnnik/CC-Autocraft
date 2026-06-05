@@ -1,3 +1,5 @@
+local Labels = require("lib.labels")
+
 local Roles = {}
 
 -- Ordered list of roles (used for UI display)
@@ -42,9 +44,17 @@ local function save(data)
   f.close()
 end
 
--- Returns the peripheral name for a role, or nil if not set.
+-- Returns the stored value for a role (may be a label or port name), or nil.
 function Roles.get(role)
   return load()[role]
+end
+
+-- Returns the resolved peripheral port name for a role, or nil.
+-- Handles both label-stored and port-stored values transparently.
+function Roles.getPort(role)
+  local value = load()[role]
+  if not value then return nil end
+  return Labels.resolvePort(value)
 end
 
 function Roles.getAll()

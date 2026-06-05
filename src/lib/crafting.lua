@@ -10,10 +10,10 @@ local Utils   = require("lib.utils")
 
 -- Peripheral names read from Roles at call time (not module load time)
 -- so that changes via the SETUP tab take effect without restart.
-local function getCrafter()     return Roles.get("crafter")          end
-local function interfaceName()  return Roles.get("recipe_interface") end
-local function stockInName()    return Roles.get("stock_in")         end
-local function stockOutName()   return Roles.get("stock_out")        end
+local function getCrafter()     return Roles.getPort("crafter")          end
+local function interfaceName()  return Roles.getPort("recipe_interface") end
+local function stockInName()    return Roles.getPort("stock_in")         end
+local function stockOutName()   return Roles.getPort("stock_out")        end
 
 local crafterNetworkID = Config.CRAFTER_NETWORK_ID
 local networkEvents = Config.NETWORK_EVENTS

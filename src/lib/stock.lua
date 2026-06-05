@@ -12,7 +12,7 @@ local function listItems(p)
 end
 
 local function getStockView()
-  local name = Roles.get("stock_view")
+  local name = Roles.getPort("stock_view")
   return name and peripheral.wrap(name) or nil
 end
 
@@ -24,7 +24,7 @@ local function getItemDetail(p, slot)
 end
 
 local function getStockIn()
-  local name = Roles.get("stock_in")
+  local name = Roles.getPort("stock_in")
   return name and peripheral.wrap(name) or nil
 end
 
@@ -309,7 +309,7 @@ function Stock.transferChecklistItems()
   local stockIn = getStockIn()
   if not stockIn then Logger.raiseError("No stock_in configured") end
 
-  local outName = Roles.get("materials_out")
+  local outName = Roles.getPort("materials_out")
   if not outName then Logger.raiseError("No materials_out configured") end
 
   local slotsByName = {}
