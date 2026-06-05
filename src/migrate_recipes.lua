@@ -105,7 +105,7 @@ local function drawScreen()
       fill(cur, colors.black)
 
       -- Value (right-aligned before [Set], truncated)
-      local disp = truncate(entry.value, xSet - L - 1)
+      local disp = truncate(stripMod(entry.value), xSet - L - 1)
       at(math.max(L, xSet - #disp - 1), cur, disp, colors.lightGray, colors.black)
 
       -- [Set] button
