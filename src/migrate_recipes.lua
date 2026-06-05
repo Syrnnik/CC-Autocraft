@@ -60,16 +60,21 @@ local function collectPorts()
   local recipes = Recipes.getAllRecipes()
   local seen, ports = {}, {}
   for _, recipe in pairs(recipes) do
-    local function add(v)
+    local function add(v, itemName)
       if v and not seen[v] then
         seen[v] = true
-        table.insert(ports, { value = v, newLabel = nil, firstRecipe = recipe.name })
+        table.insert(ports, {
+          value       = v,
+          newLabel    = nil,
+          firstRecipe = recipe.name,
+          firstItem   = itemName,
+        })
       end
     end
     add(recipe.processor)
     add(recipe.resultProcessor)
     if recipe.items then
-      for _, item in ipairs(recipe.items) do add(item.processor) end
+      for _, item in ipairs(recipe.items) do add(item.processor, item.name) end
     end
   end
   table.sort(ports, function(a, b) return a.value < b.value end)
@@ -116,11 +121,13 @@ local function drawScreen()
       local labelColor = entry.newLabel and colors.cyan or colors.gray
       at(xLabel, cur, truncate(labelVal, labelW), labelColor, colors.black)
 
-      -- First recipe that uses this processor (hint in gray)
+      -- Recipe hint: "recipe (item)" in gray
       if entry.firstRecipe and xRecipe <= W then
-        at(xRecipe, cur,
-           truncate(stripMod(entry.firstRecipe), W - xRecipe + 1),
-           colors.gray, colors.black)
+        local hint = stripMod(entry.firstRecipe)
+        if entry.firstItem then
+          hint = hint .. " (" .. stripMod(entry.firstItem) .. ")"
+        end
+        at(xRecipe, cur, truncate(hint, W - xRecipe + 1), colors.gray, colors.black)
       end
 
       cur = cur + 1
