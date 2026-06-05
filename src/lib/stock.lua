@@ -110,8 +110,10 @@ function Stock.getItemsForRecipe(recipe, batchSize)
   -- Index all stock slots by item name, tracking remaining count per slot.
   -- This allows recipe positions to be spread across multiple source slots
   -- when the total needed exceeds what any single slot holds.
-  local slotsByName = {}
   local stockIn = getStockIn()
+  if not stockIn then Logger.raiseError("Role 'Stock In' is not configured") end
+
+  local slotsByName = {}
   for slot, item in pairs(listItems(stockIn)) do
     local name = item.name
     if not slotsByName[name] then
@@ -158,8 +160,10 @@ end
 -- spreading items across multiple stock slots when needed.
 function Stock.getItemsForMachineRecipe(recipe, batchSize)
   batchSize = batchSize or 1
-  local slotsByName = {}
   local stockIn2 = getStockIn()
+  if not stockIn2 then Logger.raiseError("Role 'Stock In' is not configured") end
+
+  local slotsByName = {}
   for slot, item in pairs(listItems(stockIn2)) do
     local name = item.name
     if not slotsByName[name] then
