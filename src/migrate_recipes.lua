@@ -51,7 +51,8 @@ local state = {
   msg         = nil,
 }
 
--- Collect unique processor values from all recipes
+-- Collect unique processor values from all recipes, tracking the first recipe
+-- name that references each value so the user can identify what it belongs to.
 local function collectPorts()
   local recipes = Recipes.getAllRecipes()
   local seen, ports = {}, {}
@@ -59,7 +60,7 @@ local function collectPorts()
     local function add(v)
       if v and not seen[v] then
         seen[v] = true
-        table.insert(ports, { value = v, newLabel = nil })
+        table.insert(ports, { value = v, newLabel = nil, firstRecipe = recipe.name })
       end
     end
     add(recipe.processor)
@@ -83,8 +84,10 @@ local function drawScreen()
   fill(1, colors.gray)
   at(L, 1, "Migrate Recipe Processors", colors.white, colors.gray)
 
-  local xLabel = xSet + #" Set " + 1
-  local cur    = 2
+  local xLabel   = xSet + #" Set " + 1  -- label column starts here
+  local labelW   = 10                    -- chars reserved for label
+  local xRecipe  = xLabel + labelW + 1   -- recipe hint column
+  local cur      = 2
 
   if #state.ports == 0 then
     at(L, cur, "No processor ports found in recipes.", colors.gray, colors.black)
@@ -108,7 +111,14 @@ local function drawScreen()
       -- Selected label (or "-")
       local labelVal   = entry.newLabel or "-"
       local labelColor = entry.newLabel and colors.cyan or colors.gray
-      at(xLabel, cur, truncate(labelVal, W - xLabel - 1), labelColor, colors.black)
+      at(xLabel, cur, truncate(labelVal, labelW), labelColor, colors.black)
+
+      -- First recipe that uses this processor (hint in gray)
+      if entry.firstRecipe and xRecipe <= W then
+        at(xRecipe, cur,
+           truncate(stripMod(entry.firstRecipe), W - xRecipe + 1),
+           colors.gray, colors.black)
+      end
 
       cur = cur + 1
 
