@@ -26,19 +26,19 @@ Two recipe types are supported:
 On the **computer** (the one with the monitor):
 
 ```
-wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua computer
+wget run https://raw.githubusercontent.com/Syrnnik/CC-Autocraft/dev/install.lua computer
 ```
 
 On the **crafting turtle**:
 
 ```
-wget run https://raw.githubusercontent.com/Syrnnik/Computer-Craft-Autocraft/dev/install.lua crafter
+wget run https://raw.githubusercontent.com/Syrnnik/CC-Autocraft/dev/install.lua crafter
 ```
 
 Both commands download all required files into an `autocraft/` folder. You can specify a different folder as the second argument:
 
 ```
-wget run .../install.lua computer myfolder
+wget run https://raw.githubusercontent.com/Syrnnik/CC-Autocraft/dev/install.lua computer myfolder
 ```
 
 After installing, run `autocraft/monitor` on the computer and `autocraft/crafter` on the turtle.
@@ -62,8 +62,9 @@ mv crafter.lua startup.lua
 | Tab | Description |
 |-----|-------------|
 | **RECIPES** | Browse saved recipes, craft, edit, or delete them |
-| **STOCK** | View current inventory counts |
+| **STOCK** | View current inventory counts, filterable by mod |
 | **+RECIPE** | Record a new recipe from the crafting interface |
+| **CHECKLIST** | Material checklist from a Create schematic clipboard — shows status per item, craft missing items, move available items to the output chest |
 | **LABELS** | Assign friendly names to peripherals (e.g. `depot_3` → `lava_input`) |
 | **SETUP** | Assign system roles to peripherals (stock, crafter, monitor, etc.) |
 
@@ -75,6 +76,8 @@ mv crafter.lua startup.lua
 | `crafter.lua` | Turtle | Listens on rednet, calls `turtle.craft()` on demand |
 | `craft.lua` | Computer | CLI: craft an item by name and count |
 | `new_craft.lua` | Computer | CLI: record a new crafter recipe |
+| `checklist.lua` | Computer | CLI: print checklist status and transfer in-stock items to output |
+| `migrate_recipes.lua` | Computer | Interactive tool: replace port names with labels across all recipes |
 | `all_recipes.lua` | Computer | CLI: list all saved recipes |
 | `get_recipe.lua` | Computer | CLI: show details of a single recipe |
 | `delete_recipe.lua` | Computer | CLI: delete a recipe by name |
@@ -112,6 +115,7 @@ Peripheral assignments are configured from the monitor UI under the **SETUP** ta
 | **Crafter** | The crafting turtle peripheral |
 | **New Recipes** | Interface used to record new recipes (e.g. a barrel) |
 | **Monitor** | The touch-screen monitor |
+| **Materials Out** | Output chest for the CHECKLIST tab — items are moved here from stock |
 
 `Stock View`, `Stock In`, and `Stock Out` can all point to the same peripheral for a simple single-vault setup.
 
