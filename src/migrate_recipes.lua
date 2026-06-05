@@ -36,6 +36,10 @@ local function truncate(s, maxLen)
   return s:sub(1, maxLen - 3) .. "..."
 end
 
+local function stripMod(name)
+  return name:match("^[^:]+:(.+)") or name
+end
+
 -- ── State ────────────────────────────────────────────────────
 
 local L    = 2
