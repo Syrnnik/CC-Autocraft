@@ -41,8 +41,7 @@ end
 
 -- ── State ────────────────────────────────────────────────────
 
-local L    = 2
-local xSet = 22       -- [Set] button column
+local L = 2
 
 local state = {
   -- { value = "...", newLabel = nil }  one entry per unique processor value
@@ -92,10 +91,17 @@ local function drawScreen()
   fill(1, colors.gray)
   at(L, 1, "Migrate Recipe Processors", colors.white, colors.gray)
 
-  local xLabel   = xSet + #" Set " + 1  -- label column starts here
-  local labelW   = 10                    -- chars reserved for label
-  local xRecipe  = xLabel + labelW + 1   -- recipe hint column
-  local cur      = 2
+  -- Compute xSet dynamically from the longest (stripped) port name
+  local maxPortW = 4  -- minimum width
+  for _, entry in ipairs(state.ports) do
+    local w = #stripMod(entry.value)
+    if w > maxPortW then maxPortW = w end
+  end
+  local xSet    = L + maxPortW + 2       -- [Set] button column
+  local xLabel  = xSet + #" Set " + 1   -- label column starts here
+  local labelW  = 10                     -- chars reserved for label
+  local xRecipe = xLabel + labelW + 1    -- recipe hint column
+  local cur     = 2
 
   if #state.ports == 0 then
     at(L, cur, "No processor ports found in recipes.", colors.gray, colors.black)
