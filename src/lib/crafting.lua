@@ -255,12 +255,26 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
   local stockOut = peripheral.wrap(stockOutName())
   local pushList = Stock.getItemsForMachineRecipe(recipe, batchSize)
 
-  -- Resolve labels → port names once
+  -- Resolve labels → port names once, with clear errors if not found
   local resultPort = Labels.resolvePort(recipe.resultProcessor)
+  if not peripheral.isPresent(resultPort) then
+    Logger.raiseError(
+      string.format("Result processor '%s' not found (port: %s)",
+        recipe.resultProcessor, tostring(resultPort))
+    )
+  end
   local portCache  = {}
-  local function resolveItemPort(p)
-    if not portCache[p] then portCache[p] = Labels.resolvePort(p) end
-    return portCache[p]
+  local function resolveItemPort(proc)
+    if not portCache[proc] then
+      local port = Labels.resolvePort(proc)
+      if not peripheral.isPresent(port) then
+        Logger.raiseError(
+          string.format("Processor '%s' not found (port: %s)", proc, tostring(port))
+        )
+      end
+      portCache[proc] = port
+    end
+    return portCache[proc]
   end
 
   -- Items placed directly into the result machine (ignored during polling)

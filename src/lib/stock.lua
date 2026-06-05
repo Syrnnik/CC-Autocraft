@@ -228,7 +228,15 @@ function Stock.getMaxBatchForMachineRecipe(recipe)
   local portCache = {}
   local function getPeripheral(processor)
     local port = Labels.resolvePort(processor)
-    if not portCache[port] then portCache[port] = peripheral.wrap(port) end
+    if not portCache[port] then
+      local p = peripheral.wrap(port)
+      if not p then
+        Logger.raiseError(
+          string.format("Processor '%s' not found (port: %s)", processor, tostring(port))
+        )
+      end
+      portCache[port] = p
+    end
     return portCache[port]
   end
 
