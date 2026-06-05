@@ -1,3 +1,4 @@
+local Labels  = require("lib.labels")
 local Logger  = require("lib.logger")
 local Recipes = require("lib.recipes")
 local Roles   = require("lib.roles")
