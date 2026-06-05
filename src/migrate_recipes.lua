@@ -125,20 +125,29 @@ local function drawScreen()
 
       cur = cur + 1
 
-      -- Inline label picker
+      -- Inline label picker (wraps across multiple rows if needed)
       if state.pickerIdx == i and cur <= H - 1 then
         fill(cur, colors.black)
         if state.customMode then
           at(L + 2, cur,
              truncate(state.customInput .. "_", W - L - 3),
              colors.yellow, colors.black)
+          cur = cur + 1
         else
-          local x = L + 2
           local RIGHT = W - 2
+          local x = L + 2
+
+          local function nextPickerRow()
+            cur = cur + 1
+            x = L + 2
+            if cur <= H - 1 then fill(cur, colors.black) end
+          end
+
           for _, litem in ipairs(state.labelItems) do
             if litem.label ~= "" then
               local bw = #litem.label + 2
-              if x + bw - 1 > RIGHT then break end
+              if x + bw - 1 > RIGHT then nextPickerRow() end
+              if cur > H - 1 then break end
               local captLabel = litem.label
               mkBtn(x, cur, litem.label, colors.black, colors.cyan, function()
                 state.ports[captI].newLabel = captLabel
@@ -147,23 +156,32 @@ local function drawScreen()
               x = x + bw + 1
             end
           end
+
           -- Custom button
-          if x + #" Custom " - 1 <= RIGHT then
+          local cbw = #" Custom "
+          if x + cbw - 1 > RIGHT then nextPickerRow() end
+          if cur <= H - 1 then
             mkBtn(x, cur, "Custom", colors.black, colors.gray, function()
               state.customMode  = true
               state.customInput = ""
             end)
-            x = x + #" Custom " + 1
+            x = x + cbw + 1
           end
+
           -- Clear button (only when a label is selected)
-          if entry.newLabel and x + #" Clear " - 1 <= RIGHT then
-            mkBtn(x, cur, "Clear", colors.black, colors.red, function()
-              state.ports[captI].newLabel = nil
-              state.pickerIdx = nil
-            end)
+          if entry.newLabel then
+            local clbw = #" Clear "
+            if x + clbw - 1 > RIGHT then nextPickerRow() end
+            if cur <= H - 1 then
+              mkBtn(x, cur, "Clear", colors.black, colors.red, function()
+                state.ports[captI].newLabel = nil
+                state.pickerIdx = nil
+              end)
+            end
           end
+
+          cur = cur + 1
         end
-        cur = cur + 1
       end
     end
   end
