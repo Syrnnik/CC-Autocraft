@@ -687,7 +687,7 @@ local function drawNewRecipe()
       mkBtn(L, cur, "Reset", colors.white, colors.gray, function()
         reloadMachineItems()
       end)
-      cur = cur + 2
+      cur = cur + 1
     end
 
     -- Result machine selector
