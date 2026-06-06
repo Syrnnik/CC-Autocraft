@@ -227,45 +227,39 @@ function Stock.getMaxBatchForRecipe(recipe)
   return math.max(1, maxBatch == math.huge and 1 or maxBatch)
 end
 
--- Returns the maximum batch size for a machine recipe based on how many
--- items each processor can hold (empty slots × stack size per item).
+-- Returns the maximum batch size for a machine recipe.
+-- Each ingredient occupies exactly one slot in the machine, so the limit
+-- is floor(maxStackSize / count_per_cycle) — the number of recipe cycles
+-- whose items still fit in a single stack.
 function Stock.getMaxBatchForMachineRecipe(recipe)
-  local portCache = {}
-  local function getPeripheral(processor)
-    local port = Labels.resolvePort(processor)
-    if not portCache[port] then
-      portCache[port] = Utils.wrapPeripheral(port)
+  local stockIn = getStockIn()
+
+  -- Build a map of item name → count_per_cycle for recipe items only.
+  local needed = {}
+  for _, item in ipairs(recipe.items) do
+    if item.count > 0 then
+      needed[item.name] = item.count
     end
-    return portCache[port]
+  end
+
+  -- Call getItemDetail only for recipe items, not all items in stock.
+  local maxCountFor = {}
+  if stockIn then
+    for slot, item in pairs(listItems(stockIn)) do
+      local name = item.name
+      if needed[name] and not maxCountFor[name] then
+        local detail = stockIn.getItemDetail(slot)
+        maxCountFor[name] = (detail and detail.maxCount) or 64
+      end
+    end
   end
 
   local maxBatch = math.huge
   for _, item in ipairs(recipe.items) do
     if item.count > 0 then
-      local p = getPeripheral(item.processor)
-      if p then
-        local list  = p.list()
-        local size  = p.size and p.size() or 9
-        local capacity = 0
-        for slot = 1, size do
-          local slotItem = list[slot]
-          if not slotItem then
-            -- Empty slot: assume default stack size of 64
-            capacity = capacity + 64
-          elseif slotItem.name == item.name then
-            -- Same item: remaining stack space
-            local maxCount = 64
-            if p.getItemDetail then
-              local detail = p.getItemDetail(slot)
-              if detail and detail.maxCount then maxCount = detail.maxCount end
-            end
-            capacity = capacity + (maxCount - slotItem.count)
-          end
-          -- Slot occupied by a different item: no space for our item
-        end
-        local limit = math.floor(capacity / item.count)
-        if limit < maxBatch then maxBatch = limit end
-      end
+      local maxCount = maxCountFor[item.name] or 64
+      local limit    = math.floor(maxCount / item.count)
+      if limit < maxBatch then maxBatch = limit end
     end
   end
 
