@@ -287,11 +287,15 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
     end
   end
 
-  -- Collect batchSize results one by one so progress updates after each
-  local steps     = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
-  local collected = 0
+  -- Collect results until we have batchSize * recipe.count items.
+  -- Multiple cycles may stack into one slot if the machine is fast, so we
+  -- count items pulled (not slot pulls) to track progress correctly.
+  local steps        = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
+  local totalNeeded  = batchSize * (recipe.count or 1)
+  local itemsPulled  = 0
+  local cyclesDone   = 0
 
-  while collected < batchSize do
+  while itemsPulled < totalNeeded do
     local found = false
     for _ = 1, steps do
       local listing    = Utils.wrapPeripheral(resultPort).list()
@@ -303,9 +307,13 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
         end
       end
       if resultSlot then
-        stockOut.pullItems(resultPort, resultSlot)
-        collected = collected + 1
-        if onEach then onEach() end
+        local n       = stockOut.pullItems(resultPort, resultSlot)
+        itemsPulled   = itemsPulled + n
+        local newCycles = math.floor(itemsPulled / (recipe.count or 1)) - cyclesDone
+        cyclesDone    = cyclesDone + newCycles
+        for _ = 1, newCycles do
+          if onEach then onEach() end
+        end
         found = true
         break
       end
@@ -313,8 +321,8 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
     end
     if not found then
       Logger.raiseError(
-        string.format("Machine craft timed out: got %d/%d from %s",
-          collected, batchSize, resultPort)
+        string.format("Machine craft timed out: got %d/%d items from %s",
+          itemsPulled, totalNeeded, resultPort)
       )
     end
   end
