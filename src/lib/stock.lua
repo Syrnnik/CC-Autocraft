@@ -100,8 +100,9 @@ function Stock.getItemsForRecipe(recipe, batchSize)
   -- Scale totals check to full batch amount
   local scaledItems = {}
   for _, item in pairs(requiredItems) do
-    local count = item.catalyst and 1 or item.count * batchSize
-    table.insert(scaledItems, { name = item.name, count = count })
+    if not item.catalyst then
+      table.insert(scaledItems, { name = item.name, count = item.count * batchSize })
+    end
   end
   local _, missingItems = Stock.getMissingItems(scaledItems)
   if #missingItems > 0 then
