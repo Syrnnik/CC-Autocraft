@@ -269,15 +269,9 @@ function Stock.getMaxBatchForRecipe(recipe)
   -- Limit by output item's max stack size (results must fit in one crafter output slot).
   local outputCount = recipe.count or 1
   if outputCount > 0 then
-    local outMaxCount
-    -- Check stock_in first (reuses already-built slotForName), then stock_view.
-    local inSlot = slotForName[recipe.name]
-    if inSlot then
-      local detail = stockIn.getItemDetail(inSlot)
-      if detail and detail.maxCount then outMaxCount = detail.maxCount end
-    end
+    local outMaxCount = recipe.maxCount  -- saved at recipe creation time (most reliable)
     if not outMaxCount then
-      local view = getStockView()
+      local view = getStockView()        -- full storage view has the broadest coverage
       if view then
         for slot, item in pairs(listItems(view)) do
           if item.name == recipe.name then
@@ -286,6 +280,13 @@ function Stock.getMaxBatchForRecipe(recipe)
             break
           end
         end
+      end
+    end
+    if not outMaxCount then              -- fallback: check stock_in
+      local inSlot = slotForName[recipe.name]
+      if inSlot then
+        local detail = stockIn.getItemDetail(inSlot)
+        if detail and detail.maxCount then outMaxCount = detail.maxCount end
       end
     end
     if outMaxCount then

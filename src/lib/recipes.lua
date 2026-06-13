@@ -217,10 +217,11 @@ function Recipes.saveRecipe(
   end
 
   local recipe = {
-    name  = craftedItem.name,
-    count = craftedItem.count,
-    items = items,
-    type  = type or "crafter",
+    name     = craftedItem.name,
+    count    = craftedItem.count,
+    maxCount = craftedItem.maxCount or nil,
+    items    = items,
+    type     = type or "crafter",
   }
 
   if type == "machine" then
