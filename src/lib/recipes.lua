@@ -107,16 +107,18 @@ function Recipes.getRequiredItemsPlainList(recipe)
     for i, requiredItem in pairs(requiredItems) do
       if recipeItemName == requiredItem.name then
         isExists = true
-        requiredItems[i].count = requiredItem.count + recipeItemCount
-
+        if not recipeItem.catalyst then
+          requiredItems[i].count = requiredItem.count + recipeItemCount
+        end
         break
       end
     end
 
     if not isExists then
       table.insert(requiredItems, {
-        name = recipeItemName,
-        count = recipeItemCount,
+        name     = recipeItemName,
+        count    = recipeItem.catalyst and 1 or recipeItemCount,
+        catalyst = recipeItem.catalyst or nil,
       })
     end
   end
@@ -204,11 +206,13 @@ function Recipes.saveRecipe(
     end
   else
     for _, item in ipairs(recipeItems) do
-      table.insert(items, {
+      local entry = {
         name  = item.name,
         count = item.count,
         slot  = item.recipeSlot,
-      })
+      }
+      if item.catalyst then entry.catalyst = true end
+      table.insert(items, entry)
     end
   end
 

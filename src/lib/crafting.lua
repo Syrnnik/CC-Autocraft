@@ -95,7 +95,8 @@ function Crafting.returnRecipeItems(items, toInterfaceName)
   end
 end
 
-function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot)
+-- skipSlots: optional set { [crafterSlot] = true } of slots to leave in the crafter.
+function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot, skipSlots)
   local toInterface = Utils.wrapPeripheral(toInterfaceName)
 
   Logger.printInfo(
@@ -105,7 +106,9 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot)
   if not isSpecificSlot then
     -- Pull everything from all crafter slots (batch craft fills multiple slots)
     for slot = 1, 16 do
-      toInterface.pullItems(getCrafter(), slot)
+      if not (skipSlots and skipSlots[slot]) then
+        toInterface.pullItems(getCrafter(), slot)
+      end
     end
     return
   end
@@ -365,6 +368,16 @@ function Crafting.craftNewRecipe()
   Logger.printInfo("Crafting..")
   Crafting.craft(recipeItems, interfaceName())
 
+  -- Auto-detect catalysts: items still present in their crafter slot after crafting
+  -- were not consumed (e.g. philosopher's stone). Mark them so saveRecipe persists the flag.
+  local crafterListing = Utils.wrapPeripheral(getCrafter()).list()
+  for _, item in ipairs(recipeItems) do
+    if crafterListing[item.crafterSlot] then
+      item.catalyst = true
+      Logger.printInfo(string.format("Catalyst detected: '%s' (crafter slot %d)", item.name, item.crafterSlot))
+    end
+  end
+
   local craftedItem = Crafting.getCraftedItem(interfaceName(), true)
   return recipeItems, craftedItem
 end
@@ -413,16 +426,38 @@ function Crafting.processCraft(recipe, batchSize, onEach)
       done = done + chunk
     end
   else
+    local catalysts = Stock.getCatalystItemsForRecipe(recipe)
+    local catalystSlots = {}
+    for _, cat in ipairs(catalysts) do
+      catalystSlots[cat.crafterSlot] = true
+    end
+
+    if #catalysts > 0 then
+      Crafting.pushItemsToCrafter(catalysts, stockInName())
+    end
+
     local maxBatch = Stock.getMaxBatchForRecipe(recipe)
     local done = 0
-    while done < batchSize do
-      local chunk = math.min(maxBatch, batchSize - done)
-      local stockItems = Stock.getItemsForRecipe(recipe, chunk)
-      Crafting.craft(stockItems, stockInName())
-      Crafting.getCraftedItem(stockOutName(), false)
-      done = done + chunk
-      if onEach then onEach() end
+    local ok, err = pcall(function()
+      while done < batchSize do
+        local chunk = math.min(maxBatch, batchSize - done)
+        local stockItems = Stock.getItemsForRecipe(recipe, chunk)
+        Crafting.craft(stockItems, stockInName())
+        Crafting.getCraftedItem(stockOutName(), false, catalystSlots)
+        done = done + chunk
+        if onEach then onEach() end
+      end
+    end)
+
+    -- Always return catalysts to stock after the batch (or on error)
+    if #catalysts > 0 then
+      local stockOut = Utils.wrapPeripheral(stockOutName())
+      for _, cat in ipairs(catalysts) do
+        stockOut.pullItems(getCrafter(), cat.crafterSlot)
+      end
     end
+
+    if not ok then error(err, 0) end
   end
 
   Logger.printSuccess(

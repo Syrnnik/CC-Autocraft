@@ -100,7 +100,8 @@ function Stock.getItemsForRecipe(recipe, batchSize)
   -- Scale totals check to full batch amount
   local scaledItems = {}
   for _, item in pairs(requiredItems) do
-    table.insert(scaledItems, { name = item.name, count = item.count * batchSize })
+    local count = item.catalyst and 1 or item.count * batchSize
+    table.insert(scaledItems, { name = item.name, count = count })
   end
   local _, missingItems = Stock.getMissingItems(scaledItems)
   if #missingItems > 0 then
@@ -123,8 +124,10 @@ function Stock.getItemsForRecipe(recipe, batchSize)
   end
 
   -- Assign a stock slot to each recipe grid position individually.
+  -- Catalyst items are pushed separately (once per batch) and skipped here.
   local pushList = {}
   for _, recipeItem in pairs(recipe.items) do
+    if recipeItem.catalyst then goto continue end
     local name = recipeItem.name
     local needed = recipeItem.count * batchSize
     local slots = slotsByName[name] or {}
@@ -151,8 +154,42 @@ function Stock.getItemsForRecipe(recipe, batchSize)
         string.format("Not enough '%s' in stock for batch", name)
       )
     end
+    ::continue::
   end
 
+  return pushList
+end
+
+-- Returns push list for catalyst items only (count=1 each, from stock_in).
+-- Catalysts are pushed to the crafter once per batch and returned afterwards.
+function Stock.getCatalystItemsForRecipe(recipe)
+  local stockIn = getStockIn()
+  if not stockIn then Logger.raiseError("Role 'Stock In' is not configured") end
+
+  local slotsByName = {}
+  for slot, item in pairs(listItems(stockIn)) do
+    if not slotsByName[item.name] then
+      slotsByName[item.name] = slot
+    end
+  end
+
+  local pushList = {}
+  for _, recipeItem in ipairs(recipe.items) do
+    if recipeItem.catalyst then
+      local name = recipeItem.name
+      local crafterSlot = Recipes.countCrafterSlot(recipeItem.slot)
+      local stockSlot = slotsByName[name]
+      if not stockSlot then
+        Logger.raiseError(string.format("Catalyst '%s' not found in stock", name))
+      end
+      table.insert(pushList, {
+        name        = name,
+        count       = 1,
+        slot        = stockSlot,
+        crafterSlot = crafterSlot,
+      })
+    end
+  end
   return pushList
 end
 
@@ -215,6 +252,7 @@ function Stock.getMaxBatchForRecipe(recipe)
   end
   local maxBatch = math.huge
   for _, item in pairs(recipe.items) do
+    if item.catalyst then goto continue end
     local slot = slotForName[item.name]
     if slot and item.count > 0 then
       local detail = stockIn.getItemDetail(slot)
@@ -223,6 +261,7 @@ function Stock.getMaxBatchForRecipe(recipe)
         if limit < maxBatch then maxBatch = limit end
       end
     end
+    ::continue::
   end
   return math.max(1, maxBatch == math.huge and 1 or maxBatch)
 end

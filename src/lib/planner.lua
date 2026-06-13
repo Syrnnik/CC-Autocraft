@@ -49,7 +49,8 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals)
 
     local ingredients = Recipes.getRequiredItemsPlainList(recipe)
     for _, ingredient in pairs(ingredients) do
-      expand(ingredient.name, ingredient.count * craftsCount, true)
+      local needed = ingredient.catalyst and 1 or ingredient.count * craftsCount
+      expand(ingredient.name, needed, true)
     end
 
     table.insert(
@@ -81,7 +82,7 @@ function Planner.validatePlan(plan, totals, maxDmg)
     local ingredients = Recipes.getRequiredItemsPlainList(step.recipe)
 
     for _, ingredient in pairs(ingredients) do
-      local needed = ingredient.count * craftsCount
+      local needed = ingredient.catalyst and 1 or ingredient.count * craftsCount
       local have = virtual[ingredient.name] or 0
 
       if have < needed then
@@ -91,8 +92,8 @@ function Planner.validatePlan(plan, totals, maxDmg)
         local itemShortage = md > 0 and math.ceil(shortage / md) or shortage
         missingByName[ingredient.name] = (missingByName[ingredient.name] or 0)
           + itemShortage
-        virtual[ingredient.name] = 0
-      else
+        if not ingredient.catalyst then virtual[ingredient.name] = 0 end
+      elseif not ingredient.catalyst then
         virtual[ingredient.name] = have - needed
       end
     end
