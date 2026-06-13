@@ -208,6 +208,11 @@ local function drawTable(opts)
     end
   end
 
+  if opts.onRefresh then
+    mkBtn(afterNav, paginationY, "Refresh", colors.black, colors.orange, opts.onRefresh)
+    afterNav = afterNav + #" Refresh " + 1
+  end
+
   if opts.bottomBarRight then
     opts.bottomBarRight(afterNav)
   else
@@ -478,6 +483,7 @@ local function drawRecipesList()
     displayName = stripMod,
     rightW      = 27,
     emptyMsg    = "No recipes yet",
+    onRefresh   = reloadRecipes,
     drawActions = function(item, row, rowBg, xCount)
       local xCraft = xCount + 6
       local xEdit  = xCraft + 8
@@ -1194,6 +1200,7 @@ local function drawStockList()
     displayName = stripMod,
     rightW      = 9,
     emptyMsg    = "Stock is empty",
+    onRefresh   = reloadStock,
   })
 end
 
@@ -1217,6 +1224,7 @@ local function drawLabels()
     headerName     = "Peripheral",
     headerCount    = "Label",
     alwaysShowPage = true,
+    onRefresh      = reloadLabels,
     countText  = function(_) return "" end,
     countColor = function(_) return colors.black end,
     -- Stale entries (port not connected) shown in red
