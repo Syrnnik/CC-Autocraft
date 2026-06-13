@@ -208,11 +208,6 @@ local function drawTable(opts)
     end
   end
 
-  if opts.onRefresh then
-    mkBtn(afterNav, paginationY, "Refresh", colors.black, colors.orange, opts.onRefresh)
-    afterNav = afterNav + #" Refresh " + 1
-  end
-
   if opts.bottomBarRight then
     opts.bottomBarRight(afterNav)
   else
@@ -234,11 +229,16 @@ local function drawTable(opts)
 
     if state.searchQuery ~= "" or state.searchMode then
       local queryStart = afterNav + searchBtnW + 1
+      local refreshW = opts.onRefresh and (#" Refresh " + 1) or 0
       local display = state.searchQuery .. (state.searchMode and "_" or "")
-      if queryStart <= W then
-        at(queryStart, paginationY, truncate(display, W - queryStart + 1),
+      if queryStart <= W - refreshW then
+        at(queryStart, paginationY, truncate(display, W - refreshW - queryStart),
            colors.black, colors.yellow)
       end
+    end
+
+    if opts.onRefresh then
+      mkBtn(W - #" Refresh " + 1, paginationY, "Refresh", colors.black, colors.orange, opts.onRefresh)
     end
   end
 end
