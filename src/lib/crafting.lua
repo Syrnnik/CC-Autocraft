@@ -368,13 +368,17 @@ function Crafting.craftNewRecipe()
   Logger.printInfo("Crafting..")
   Crafting.craft(recipeItems, interfaceName())
 
-  -- Auto-detect catalysts: items still present in their crafter slot after crafting
-  -- were not consumed (e.g. philosopher's stone). Mark them so saveRecipe persists the flag.
-  local crafterListing = Utils.wrapPeripheral(getCrafter()).list()
+  -- Auto-detect catalysts: pull 1 item from each recipe crafter slot back to its
+  -- original interface slot. If the same item name returns, it wasn't consumed.
+  local interface = Utils.wrapPeripheral(interfaceName())
   for _, item in ipairs(recipeItems) do
-    if crafterListing[item.crafterSlot] then
-      item.catalyst = true
-      Logger.printInfo(string.format("Catalyst detected: '%s' (crafter slot %d)", item.name, item.crafterSlot))
+    local pulled = interface.pullItems(getCrafter(), item.crafterSlot, 1, item.slot)
+    if pulled > 0 then
+      local detail = interface.getItemDetail(item.slot)
+      if detail and detail.name == item.name then
+        item.catalyst = true
+        Logger.printInfo(string.format("Catalyst detected: '%s' (crafter slot %d)", item.name, item.crafterSlot))
+      end
     end
   end
 
