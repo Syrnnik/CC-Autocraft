@@ -273,6 +273,9 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
 
   -- Push all items for the full batch at once
   for _, item in pairs(pushList) do
+    if not item.processor then
+      Logger.raiseError(string.format("No processor assigned for '%s' in recipe", item.name))
+    end
     local port = resolveItemPort(item.processor)
     Logger.printInfo(string.format("Pushing '%s' x%d to '%s'", item.name, item.count, port))
     local pushed = stockIn.pushItems(port, item.slot, item.count)

@@ -249,12 +249,9 @@ function Recipes.updateRecipeProcessor(
   if type == "machine" then
     recipe.resultProcessor = toLabelOrPort(resultProcessor)
     recipe.processor = nil
-    if itemProcessors then
-      for _, item in ipairs(recipe.items) do
-        if itemProcessors[item.name] then
-          item.processor = toLabelOrPort(itemProcessors[item.name])
-        end
-      end
+    for _, item in ipairs(recipe.items) do
+      local proc = itemProcessors and itemProcessors[item.name]
+      item.processor = proc and toLabelOrPort(proc) or nil
     end
   else
     recipe.processor = toLabelOrPort(processor or Roles.get("crafter"))
