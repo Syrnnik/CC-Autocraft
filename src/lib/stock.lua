@@ -241,6 +241,8 @@ end
 
 -- Returns the maximum safe batchSize for a crafter recipe based on item stack sizes.
 -- Each recipe slot maps to one crafter slot, so count*batch must not exceed maxCount.
+-- The output item's maxCount is also checked: results accumulate in one crafter slot
+-- and will overflow (dropping to the world) if batch*recipe.count exceeds it.
 function Stock.getMaxBatchForRecipe(recipe)
   local stockIn = getStockIn()
   if not stockIn then return 1 end
@@ -263,6 +265,35 @@ function Stock.getMaxBatchForRecipe(recipe)
     end
     ::continue::
   end
+
+  -- Limit by output item's max stack size (results must fit in one crafter output slot).
+  local outputCount = recipe.count or 1
+  if outputCount > 0 then
+    local outMaxCount
+    -- Check stock_in first (reuses already-built slotForName), then stock_view.
+    local inSlot = slotForName[recipe.name]
+    if inSlot then
+      local detail = stockIn.getItemDetail(inSlot)
+      if detail and detail.maxCount then outMaxCount = detail.maxCount end
+    end
+    if not outMaxCount then
+      local view = getStockView()
+      if view then
+        for slot, item in pairs(listItems(view)) do
+          if item.name == recipe.name then
+            local detail = getItemDetail(view, slot)
+            if detail and detail.maxCount then outMaxCount = detail.maxCount end
+            break
+          end
+        end
+      end
+    end
+    if outMaxCount then
+      local limit = math.floor(outMaxCount / outputCount)
+      if limit < maxBatch then maxBatch = limit end
+    end
+  end
+
   return math.max(1, maxBatch == math.huge and 1 or maxBatch)
 end
 
