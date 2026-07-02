@@ -1,15 +1,18 @@
-local Labels  = require("lib.labels")
-local Logger  = require("lib.logger")
+local DisplayNames = require("lib.display_names")
+local Labels = require("lib.labels")
+local Logger = require("lib.logger")
 local Recipes = require("lib.recipes")
-local Roles   = require("lib.roles")
-local Utils   = require("lib.utils")
+local Roles = require("lib.roles")
+local Utils = require("lib.utils")
 
 local Stock = {}
 
 -- Returns slot-indexed item listing from a peripheral.
 -- Prefers stock() over list() when available.
 local function listItems(p)
-  if p.stock then return p.stock() end
+  if p.stock then
+    return p.stock()
+  end
   return p.list()
 end
 
@@ -21,7 +24,9 @@ end
 -- Returns item detail from a peripheral, preferring getStockItemDetail (ME/custom
 -- storage systems) over the standard getItemDetail.
 local function getItemDetail(p, slot)
-  if p.getStockItemDetail then return p.getStockItemDetail(slot) end
+  if p.getStockItemDetail then
+    return p.getStockItemDetail(slot)
+  end
   return p.getItemDetail(slot)
 end
 
@@ -101,7 +106,10 @@ function Stock.getItemsForRecipe(recipe, batchSize)
   local scaledItems = {}
   for _, item in pairs(requiredItems) do
     if not item.catalyst then
-      table.insert(scaledItems, { name = item.name, count = item.count * batchSize })
+      table.insert(
+        scaledItems,
+        { name = item.name, count = item.count * batchSize }
+      )
     end
   end
   local _, missingItems = Stock.getMissingItems(scaledItems)
@@ -113,7 +121,9 @@ function Stock.getItemsForRecipe(recipe, batchSize)
   -- This allows recipe positions to be spread across multiple source slots
   -- when the total needed exceeds what any single slot holds.
   local stockIn = getStockIn()
-  if not stockIn then Logger.raiseError("Role 'Stock In' is not configured") end
+  if not stockIn then
+    Logger.raiseError("Role 'Stock In' is not configured")
+  end
 
   local slotsByName = {}
   for slot, item in pairs(listItems(stockIn)) do
@@ -128,7 +138,9 @@ function Stock.getItemsForRecipe(recipe, batchSize)
   -- Catalyst items are pushed separately (once per batch) and skipped here.
   local pushList = {}
   for _, recipeItem in pairs(recipe.items) do
-    if recipeItem.catalyst then goto continue end
+    if recipeItem.catalyst then
+      goto continue
+    end
     local name = recipeItem.name
     local needed = recipeItem.count * batchSize
     local slots = slotsByName[name] or {}
@@ -136,7 +148,9 @@ function Stock.getItemsForRecipe(recipe, batchSize)
     local crafterSlot = Recipes.countCrafterSlot(recipeItem.slot)
     local remaining = needed
     for _, entry in ipairs(slots) do
-      if remaining <= 0 then break end
+      if remaining <= 0 then
+        break
+      end
       local take = math.min(entry.remaining, remaining)
       if take > 0 then
         entry.remaining = entry.remaining - take
@@ -165,7 +179,9 @@ end
 -- Catalysts are pushed to the crafter once per batch and returned afterwards.
 function Stock.getCatalystItemsForRecipe(recipe)
   local stockIn = getStockIn()
-  if not stockIn then Logger.raiseError("Role 'Stock In' is not configured") end
+  if not stockIn then
+    Logger.raiseError("Role 'Stock In' is not configured")
+  end
 
   local slotsByName = {}
   for slot, item in pairs(listItems(stockIn)) do
@@ -181,12 +197,14 @@ function Stock.getCatalystItemsForRecipe(recipe)
       local crafterSlot = Recipes.countCrafterSlot(recipeItem.slot)
       local stockSlot = slotsByName[name]
       if not stockSlot then
-        Logger.raiseError(string.format("Catalyst '%s' not found in stock", name))
+        Logger.raiseError(
+          string.format("Catalyst '%s' not found in stock", name)
+        )
       end
       table.insert(pushList, {
-        name        = name,
-        count       = 1,
-        slot        = stockSlot,
+        name = name,
+        count = 1,
+        slot = stockSlot,
         crafterSlot = crafterSlot,
       })
     end
@@ -199,7 +217,9 @@ end
 function Stock.getItemsForMachineRecipe(recipe, batchSize)
   batchSize = batchSize or 1
   local stockIn2 = getStockIn()
-  if not stockIn2 then Logger.raiseError("Role 'Stock In' is not configured") end
+  if not stockIn2 then
+    Logger.raiseError("Role 'Stock In' is not configured")
+  end
 
   local slotsByName = {}
   for slot, item in pairs(listItems(stockIn2)) do
@@ -212,28 +232,32 @@ function Stock.getItemsForMachineRecipe(recipe, batchSize)
 
   local pushList = {}
   for _, recipeItem in pairs(recipe.items) do
-    local name     = recipeItem.name
-    local needed   = recipeItem.count * batchSize
-    local slots    = slotsByName[name] or {}
+    local name = recipeItem.name
+    local needed = recipeItem.count * batchSize
+    local slots = slotsByName[name] or {}
     local remaining = needed
 
     for _, entry in ipairs(slots) do
-      if remaining <= 0 then break end
+      if remaining <= 0 then
+        break
+      end
       local take = math.min(entry.remaining, remaining)
       if take > 0 then
         entry.remaining = entry.remaining - take
-        remaining       = remaining - take
+        remaining = remaining - take
         table.insert(pushList, {
-          name      = name,
-          count     = take,
-          slot      = entry.slot,
+          name = name,
+          count = take,
+          slot = entry.slot,
           processor = recipeItem.processor,
         })
       end
     end
 
     if remaining > 0 then
-      Logger.raiseError(string.format("Not enough '%s' in stock for machine batch", name))
+      Logger.raiseError(
+        string.format("Not enough '%s' in stock for machine batch", name)
+      )
     end
   end
 
@@ -246,7 +270,9 @@ end
 -- and will overflow (dropping to the world) if batch*recipe.count exceeds it.
 function Stock.getMaxBatchForRecipe(recipe)
   local stockIn = getStockIn()
-  if not stockIn then return 1 end
+  if not stockIn then
+    return 1
+  end
   local slotForName = {}
   for slot, item in pairs(listItems(stockIn)) do
     if not slotForName[item.name] then
@@ -255,13 +281,17 @@ function Stock.getMaxBatchForRecipe(recipe)
   end
   local maxBatch = math.huge
   for _, item in pairs(recipe.items) do
-    if item.catalyst then goto continue end
+    if item.catalyst then
+      goto continue
+    end
     local slot = slotForName[item.name]
     if slot and item.count > 0 then
       local detail = stockIn.getItemDetail(slot)
       if detail and detail.maxCount then
         local limit = math.floor(detail.maxCount / item.count)
-        if limit < maxBatch then maxBatch = limit end
+        if limit < maxBatch then
+          maxBatch = limit
+        end
       end
     end
     ::continue::
@@ -270,29 +300,35 @@ function Stock.getMaxBatchForRecipe(recipe)
   -- Limit by output item's max stack size (results must fit in one crafter output slot).
   local outputCount = recipe.count or 1
   if outputCount > 0 then
-    local outMaxCount = recipe.maxCount  -- saved at recipe creation time (most reliable)
+    local outMaxCount = recipe.maxCount -- saved at recipe creation time (most reliable)
     if not outMaxCount then
-      local view = getStockView()        -- full storage view has the broadest coverage
+      local view = getStockView() -- full storage view has the broadest coverage
       if view then
         for slot, item in pairs(listItems(view)) do
           if item.name == recipe.name then
             local detail = getItemDetail(view, slot)
-            if detail and detail.maxCount then outMaxCount = detail.maxCount end
+            if detail and detail.maxCount then
+              outMaxCount = detail.maxCount
+            end
             break
           end
         end
       end
     end
-    if not outMaxCount then              -- fallback: check stock_in
+    if not outMaxCount then -- fallback: check stock_in
       local inSlot = slotForName[recipe.name]
       if inSlot then
         local detail = stockIn.getItemDetail(inSlot)
-        if detail and detail.maxCount then outMaxCount = detail.maxCount end
+        if detail and detail.maxCount then
+          outMaxCount = detail.maxCount
+        end
       end
     end
     if outMaxCount then
       local limit = math.floor(outMaxCount / outputCount)
-      if limit < maxBatch then maxBatch = limit end
+      if limit < maxBatch then
+        maxBatch = limit
+      end
     end
   end
 
@@ -330,8 +366,10 @@ function Stock.getMaxBatchForMachineRecipe(recipe)
   for _, item in ipairs(recipe.items) do
     if item.count > 0 then
       local maxCount = maxCountFor[item.name] or 64
-      local limit    = math.floor(maxCount / item.count)
-      if limit < maxBatch then maxBatch = limit end
+      local limit = math.floor(maxCount / item.count)
+      if limit < maxBatch then
+        maxBatch = limit
+      end
     end
   end
 
@@ -340,7 +378,9 @@ end
 
 function Stock.getTotals()
   local stock = getStockView()
-  if not stock then return {} end
+  if not stock then
+    return {}
+  end
   local totals = {}
   for _, item in pairs(listItems(stock)) do
     local name = item.name
@@ -355,7 +395,9 @@ end
 -- used to convert a use-shortage back to an item count.
 function Stock.getDurabilityAwareTotals()
   local stock = getStockView()
-  if not stock then return {}, {} end
+  if not stock then
+    return {}, {}
+  end
   local totals = {}
   local maxDmg = {}
 
@@ -389,17 +431,21 @@ end
 -- Returns nil if no clipboard found.
 function Stock.getChecklistStatus()
   local clipboard = peripheral.find("create:clipboard")
-  if not clipboard then return nil end
+  if not clipboard then
+    return nil
+  end
 
   local rawItems = clipboard.getItemEntries()
-  if not rawItems then return {} end
+  if not rawItems then
+    return {}
+  end
 
-  local totals     = Stock.getTotals()
+  local totals = Stock.getTotals()
   local allRecipes = Recipes.getAllRecipes()
 
   local result = {}
   for _, entry in ipairs(rawItems) do
-    local name   = entry.item.name
+    local name = entry.item.name
     local needed = entry.itemAmount or 0
     local status
     if entry.checked then
@@ -427,15 +473,21 @@ function Stock.transferChecklistItems()
   end
 
   local stockIn = getStockIn()
-  if not stockIn then Logger.raiseError("No stock_in configured") end
+  if not stockIn then
+    Logger.raiseError("No stock_in configured")
+  end
 
   local outName = Roles.getPort("materials_out")
-  if not outName then Logger.raiseError("No materials_out configured") end
+  if not outName then
+    Logger.raiseError("No materials_out configured")
+  end
 
   local slotsByName = {}
   for slot, item in pairs(listItems(stockIn)) do
     local name = item.name
-    if not slotsByName[name] then slotsByName[name] = {} end
+    if not slotsByName[name] then
+      slotsByName[name] = {}
+    end
     table.insert(slotsByName[name], { slot = slot, remaining = item.count })
   end
 
@@ -450,7 +502,9 @@ function Stock.transferChecklistItems()
       local remaining = needed
 
       for _, entry in ipairs(slots) do
-        if remaining <= 0 then break end
+        if remaining <= 0 then
+          break
+        end
         local take = math.min(entry.remaining, remaining)
         if take > 0 then
           local moved = stockIn.pushItems(outName, entry.slot, take)
@@ -460,12 +514,55 @@ function Stock.transferChecklistItems()
       end
 
       local moved = needed - remaining
-      if moved > 0 then table.insert(transferred, { name = name, count = moved }) end
-      if remaining > 0 then table.insert(notFound, { name = name, count = remaining }) end
+      if moved > 0 then
+        table.insert(transferred, { name = name, count = moved })
+      end
+      if remaining > 0 then
+        table.insert(notFound, { name = name, count = remaining })
+      end
     end
   end
 
   return transferred, notFound
+end
+
+-- Scans Stock View, resolving the displayName of every distinct item present,
+-- and persists the results to the DisplayNames store.
+-- wanted: optional set { [id] = true } of item ids we expect. Ids in `wanted`
+--         that are not present in stock are returned in `notFound` (sorted).
+-- Returns: found (map id -> displayName), foundCount, notFound (list of ids).
+function Stock.scanDisplayNames(wanted)
+  local view = getStockView()
+  if not view then
+    Logger.raiseError("Role 'Stock View' is not configured")
+  end
+
+  local found = {}
+  local foundCount = 0
+  for slot, item in pairs(listItems(view)) do
+    if not found[item.name] then
+      local detail = getItemDetail(view, slot)
+      local displayName = detail and detail.displayName
+      if displayName then
+        found[item.name] = displayName
+        foundCount = foundCount + 1
+      end
+    end
+  end
+
+  DisplayNames.setMany(found)
+
+  local notFound = {}
+  if wanted then
+    for id in pairs(wanted) do
+      if not found[id] then
+        table.insert(notFound, id)
+      end
+    end
+    table.sort(notFound)
+  end
+
+  return found, foundCount, notFound
 end
 
 return Stock
