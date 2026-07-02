@@ -15,6 +15,7 @@ local DEST   = args[2] or "autocraft"
 local COMPUTER_FILES = {
   "lib/config.lua",
   "lib/crafting.lua",
+  "lib/display_names.lua",
   "lib/labels.lua",
   "lib/logger.lua",
   "lib/network.lua",
@@ -35,6 +36,7 @@ local COMPUTER_FILES = {
   "migrate_recipes.lua",
   "monitor.lua",
   "new_craft.lua",
+  "scan_names.lua",
 }
 
 local CRAFTER_FILES = {
