@@ -1,11 +1,14 @@
-local Config  = require("lib.config")
-local Labels  = require("lib.labels")
-local Logger  = require("lib.logger")
-local Roles   = require("lib.roles")
+local Config = require("lib.config")
+local DisplayNames = require("lib.display_names")
+local Labels = require("lib.labels")
+local Logger = require("lib.logger")
+local Roles = require("lib.roles")
 
 -- Returns the label for a peripheral port if one is set, else returns the port as-is.
 local function toLabelOrPort(port)
-  if not port then return nil end
+  if not port then
+    return nil
+  end
   return Labels.get(port) or port
 end
 
@@ -116,8 +119,8 @@ function Recipes.getRequiredItemsPlainList(recipe)
 
     if not isExists then
       table.insert(requiredItems, {
-        name     = recipeItemName,
-        count    = recipeItem.catalyst and 1 or recipeItemCount,
+        name = recipeItemName,
+        count = recipeItem.catalyst and 1 or recipeItemCount,
         catalyst = recipeItem.catalyst or nil,
       })
     end
@@ -199,29 +202,32 @@ function Recipes.saveRecipe(
   if type == "machine" then
     for _, item in ipairs(recipeItems) do
       table.insert(items, {
-        name      = item.name,
-        count     = item.count,
+        name = item.name,
+        count = item.count,
         processor = toLabelOrPort(item.processor),
       })
     end
   else
     for _, item in ipairs(recipeItems) do
       local entry = {
-        name  = item.name,
+        name = item.name,
         count = item.count,
-        slot  = item.recipeSlot,
+        slot = item.recipeSlot,
       }
-      if item.catalyst then entry.catalyst = true end
+      if item.catalyst then
+        entry.catalyst = true
+      end
       table.insert(items, entry)
     end
   end
 
   local recipe = {
-    name     = craftedItem.name,
-    count    = craftedItem.count,
+    name = craftedItem.name,
+    displayName = craftedItem.displayName or nil,
+    count = craftedItem.count,
     maxCount = craftedItem.maxCount or nil,
-    items    = items,
-    type     = type or "crafter",
+    items = items,
+    type = type or "crafter",
   }
 
   if type == "machine" then
@@ -229,6 +235,10 @@ function Recipes.saveRecipe(
   else
     recipe.processor = toLabelOrPort(processor or Roles.get("crafter"))
   end
+
+  -- Mirror the crafted item's displayName into the shared store so tables can
+  -- show a friendly name without re-scanning stock.
+  DisplayNames.set(craftedItem.name, craftedItem.displayName)
 
   Recipes.addNewRecipe(recipe)
 end
