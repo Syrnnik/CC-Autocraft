@@ -427,8 +427,9 @@ function Crafting.processNewCraft()
   local recipeItems, craftedItem = Crafting.craftNewRecipe()
   local craftedItemName = craftedItem.name
 
-  local isExists, _ = pcall(Recipes.getRecipe, craftedItemName)
-  if not isExists then
+  local existing =
+    Recipes.findExisting(craftedItemName, craftedItem.displayName)
+  if not existing then
     Recipes.saveRecipe(recipeItems, craftedItem)
   else
     Logger.printWarning(

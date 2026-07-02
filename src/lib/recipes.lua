@@ -300,4 +300,17 @@ function Recipes.getRecipe(recipeName)
   return recipe
 end
 
+-- Finds an existing recipe that matches BOTH the item id (name) and the
+-- displayName. Returns the recipe and its storage key, or nil if none matches.
+function Recipes.findExisting(name, displayName)
+  local recipes = Recipes.getAllRecipes()
+  local recipe = name and recipes[name]
+
+  if recipe and recipe.displayName == displayName then
+    return recipe, name
+  end
+
+  return nil
+end
+
 return Recipes
