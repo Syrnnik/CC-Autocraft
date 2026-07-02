@@ -4,16 +4,24 @@ local Logger = require("lib.logger")
 local Network = require("lib.network")
 local Planner = require("lib.planner")
 local Recipes = require("lib.recipes")
-local Roles   = require("lib.roles")
-local Stock   = require("lib.stock")
-local Utils   = require("lib.utils")
+local Roles = require("lib.roles")
+local Stock = require("lib.stock")
+local Utils = require("lib.utils")
 
 -- Peripheral names read from Roles at call time (not module load time)
 -- so that changes via the SETUP tab take effect without restart.
-local function getCrafter()     return Roles.getPort("crafter")          end
-local function interfaceName()  return Roles.getPort("recipe_interface") end
-local function stockInName()    return Roles.getPort("stock_in")         end
-local function stockOutName()   return Roles.getPort("stock_out")        end
+local function getCrafter()
+  return Roles.getPort("crafter")
+end
+local function interfaceName()
+  return Roles.getPort("recipe_interface")
+end
+local function stockInName()
+  return Roles.getPort("stock_in")
+end
+local function stockOutName()
+  return Roles.getPort("stock_out")
+end
 
 local crafterNetworkID = Config.CRAFTER_NETWORK_ID
 local networkEvents = Config.NETWORK_EVENTS
@@ -254,15 +262,17 @@ end
 -- onEach(): called after each individual result is collected (for progress tracking).
 function Crafting.craftMachine(recipe, batchSize, onEach)
   batchSize = batchSize or 1
-  local stockIn  = Utils.wrapPeripheral(stockInName())
+  local stockIn = Utils.wrapPeripheral(stockInName())
   local stockOut = Utils.wrapPeripheral(stockOutName())
   local pushList = Stock.getItemsForMachineRecipe(recipe, batchSize)
 
   -- Resolve labels → port names once (Utils.wrapPeripheral will error if not found)
   local resultPort = Labels.resolvePort(recipe.resultProcessor)
-  local portCache  = {}
+  local portCache = {}
   local function resolveItemPort(proc)
-    if not portCache[proc] then portCache[proc] = Labels.resolvePort(proc) end
+    if not portCache[proc] then
+      portCache[proc] = Labels.resolvePort(proc)
+    end
     return portCache[proc]
   end
 
@@ -277,28 +287,34 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
   -- Push all items for the full batch at once
   for _, item in pairs(pushList) do
     if not item.processor then
-      Logger.raiseError(string.format("No processor assigned for '%s' in recipe", item.name))
+      Logger.raiseError(
+        string.format("No processor assigned for '%s' in recipe", item.name)
+      )
     end
     local port = resolveItemPort(item.processor)
-    Logger.printInfo(string.format("Pushing '%s' x%d to '%s'", item.name, item.count, port))
+    Logger.printInfo(
+      string.format("Pushing '%s' x%d to '%s'", item.name, item.count, port)
+    )
     local pushed = stockIn.pushItems(port, item.slot, item.count)
     if pushed == 0 then
-      Logger.raiseError(string.format("Failed to push '%s' to '%s'", item.name, port))
+      Logger.raiseError(
+        string.format("Failed to push '%s' to '%s'", item.name, port)
+      )
     end
   end
 
   -- Collect results until we have batchSize * recipe.count items.
   -- Multiple cycles may stack into one slot if the machine is fast, so we
   -- count items pulled (not slot pulls) to track progress correctly.
-  local steps        = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
-  local totalNeeded  = batchSize * (recipe.count or 1)
-  local itemsPulled  = 0
-  local cyclesDone   = 0
+  local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
+  local totalNeeded = batchSize * (recipe.count or 1)
+  local itemsPulled = 0
+  local cyclesDone = 0
 
   while itemsPulled < totalNeeded do
     local found = false
     for _ = 1, steps do
-      local listing    = Utils.wrapPeripheral(resultPort).list()
+      local listing = Utils.wrapPeripheral(resultPort).list()
       local resultSlot = nil
       for s, sItem in pairs(listing) do
         if not inputsToResult[sItem.name] then
@@ -307,12 +323,15 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
         end
       end
       if resultSlot then
-        local n       = stockOut.pullItems(resultPort, resultSlot)
-        itemsPulled   = itemsPulled + n
-        local newCycles = math.floor(itemsPulled / (recipe.count or 1)) - cyclesDone
-        cyclesDone    = cyclesDone + newCycles
+        local n = stockOut.pullItems(resultPort, resultSlot)
+        itemsPulled = itemsPulled + n
+        local newCycles = math.floor(itemsPulled / (recipe.count or 1))
+          - cyclesDone
+        cyclesDone = cyclesDone + newCycles
         for _ = 1, newCycles do
-          if onEach then onEach() end
+          if onEach then
+            onEach()
+          end
         end
         found = true
         break
@@ -321,8 +340,12 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
     end
     if not found then
       Logger.raiseError(
-        string.format("Machine craft timed out: got %d/%d items from %s",
-          itemsPulled, totalNeeded, resultPort)
+        string.format(
+          "Machine craft timed out: got %d/%d items from %s",
+          itemsPulled,
+          totalNeeded,
+          resultPort
+        )
       )
     end
   end
@@ -363,9 +386,7 @@ end
 -- Craft from the recipe interface and return the items + crafted result
 -- without saving anything. Raises an error on failure.
 function Crafting.craftNewRecipe()
-  Logger.printDebug(
-    string.format("Getting items from '%s'", interfaceName())
-  )
+  Logger.printDebug(string.format("Getting items from '%s'", interfaceName()))
   local recipeItems = Recipes.getNewRecipeItems(interfaceName())
 
   if #recipeItems == 0 then
@@ -380,12 +401,19 @@ function Crafting.craftNewRecipe()
   -- original interface slot. If the same item name returns, it wasn't consumed.
   local interface = Utils.wrapPeripheral(interfaceName())
   for _, item in ipairs(recipeItems) do
-    local pulled = interface.pullItems(getCrafter(), item.crafterSlot, 1, item.slot)
+    local pulled =
+      interface.pullItems(getCrafter(), item.crafterSlot, 1, item.slot)
     if pulled > 0 then
       local detail = interface.getItemDetail(item.slot)
       if detail and detail.name == item.name then
         item.catalyst = true
-        Logger.printInfo(string.format("Catalyst detected: '%s' (crafter slot %d)", item.name, item.crafterSlot))
+        Logger.printInfo(
+          string.format(
+            "Catalyst detected: '%s' (crafter slot %d)",
+            item.name,
+            item.crafterSlot
+          )
+        )
       end
     end
   end
@@ -457,7 +485,9 @@ function Crafting.processCraft(recipe, batchSize, onEach)
         Crafting.craft(stockItems, stockInName())
         Crafting.getCraftedItem(stockOutName(), false, catalystSlots)
         done = done + chunk
-        if onEach then onEach() end
+        if onEach then
+          onEach()
+        end
       end
     end)
 
@@ -469,7 +499,9 @@ function Crafting.processCraft(recipe, batchSize, onEach)
       end
     end
 
-    if not ok then error(err, 0) end
+    if not ok then
+      error(err, 0)
+    end
   end
 
   Logger.printSuccess(
@@ -492,7 +524,9 @@ function Crafting.craftItem(recipeName, count, onStep, onPlan, onStepDone)
   end
 
   Planner.printPlan(plan)
-  if onPlan then onPlan(plan) end
+  if onPlan then
+    onPlan(plan)
+  end
 
   local missing = Planner.validatePlan(plan, totals, maxDmg)
   if #missing > 0 then
@@ -520,13 +554,21 @@ function Crafting.craftItem(recipeName, count, onStep, onPlan, onStepDone)
   local doneRuns = 0
   for _, step in ipairs(plan) do
     Logger.printInfo(
-      string.format("Crafting '%s' x%d craft(s) as one batch..", step.name, step.craftsCount)
+      string.format(
+        "Crafting '%s' x%d craft(s) as one batch..",
+        step.name,
+        step.craftsCount
+      )
     )
     Crafting.processCraft(step.recipe, step.craftsCount, function()
       doneRuns = doneRuns + 1
-      if onStep then onStep(doneRuns, totalRuns) end
+      if onStep then
+        onStep(doneRuns, totalRuns)
+      end
     end)
-    if onStepDone then onStepDone() end
+    if onStepDone then
+      onStepDone()
+    end
   end
 
   Logger.printSuccess(

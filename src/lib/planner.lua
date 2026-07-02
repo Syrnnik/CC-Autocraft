@@ -92,7 +92,9 @@ function Planner.validatePlan(plan, totals, maxDmg)
         local itemShortage = md > 0 and math.ceil(shortage / md) or shortage
         missingByName[ingredient.name] = (missingByName[ingredient.name] or 0)
           + itemShortage
-        if not ingredient.catalyst then virtual[ingredient.name] = 0 end
+        if not ingredient.catalyst then
+          virtual[ingredient.name] = 0
+        end
       elseif not ingredient.catalyst then
         virtual[ingredient.name] = have - needed
       end
@@ -107,7 +109,9 @@ function Planner.validatePlan(plan, totals, maxDmg)
   for name, count in pairs(missingByName) do
     table.insert(missing, { name = name, count = count })
   end
-  table.sort(missing, function(a, b) return a.name < b.name end)
+  table.sort(missing, function(a, b)
+    return a.name < b.name
+  end)
 
   return missing
 end

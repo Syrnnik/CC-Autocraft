@@ -1,9 +1,11 @@
 local Roles = require("lib.roles")
-local UI    = require("lib.ui")
+local UI = require("lib.ui")
 
 local function findMonitor()
   for _, name in ipairs(peripheral.getNames()) do
-    if peripheral.hasType(name, "monitor") then return name end
+    if peripheral.hasType(name, "monitor") then
+      return name
+    end
   end
 end
 

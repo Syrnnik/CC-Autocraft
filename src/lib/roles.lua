@@ -14,21 +14,26 @@ Roles.LIST = {
 }
 
 Roles.DISPLAY = {
-  stock_view       = "Stock View",
-  stock_in         = "Stock In",
-  stock_out        = "Stock Out",
-  crafter          = "Crafter",
+  stock_view = "Stock View",
+  stock_in = "Stock In",
+  stock_out = "Stock Out",
+  crafter = "Crafter",
   recipe_interface = "New Recipes",
-  monitor          = "Monitor",
-  materials_out    = "Materials Out",
+  monitor = "Monitor",
+  materials_out = "Materials Out",
 }
 
-local path   = "data/roles.json"
-local _cache = nil  -- in-memory cache; nil means not loaded yet
+local path = "data/roles.json"
+local _cache = nil -- in-memory cache; nil means not loaded yet
 
 local function load()
-  if _cache then return _cache end
-  if not fs.exists(path) then _cache = {}; return _cache end
+  if _cache then
+    return _cache
+  end
+  if not fs.exists(path) then
+    _cache = {}
+    return _cache
+  end
   local f = fs.open(path, "r")
   local content = f.readAll()
   f.close()
@@ -38,7 +43,9 @@ end
 
 local function save(data)
   _cache = data
-  if not fs.exists("data") then fs.makeDir("data") end
+  if not fs.exists("data") then
+    fs.makeDir("data")
+  end
   local f = fs.open(path, "w")
   f.write(textutils.serializeJSON(data))
   f.close()
@@ -53,7 +60,9 @@ end
 -- Handles both label-stored and port-stored values transparently.
 function Roles.getPort(role)
   local value = load()[role]
-  if not value then return nil end
+  if not value then
+    return nil
+  end
   return Labels.resolvePort(value)
 end
 
