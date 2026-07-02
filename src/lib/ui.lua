@@ -88,6 +88,21 @@ local function resolveDisplay(name)
   return DisplayNames.get(name) or stripMod(name)
 end
 
+-- Fuzzy search: splits `query` into whitespace-separated tokens and returns true
+-- when every token appears in `text` as a substring, in order. Both are compared
+-- lowercased. An empty query matches everything. So "and all" matches both
+-- "andesite alloy" and "andesite_alloy".
+local function matchesQuery(text, query)
+  text = text:lower()
+  local pos = 1
+  for token in query:lower():gmatch("%S+") do
+    local _, e = text:find(token, pos, true)
+    if not e then return false end
+    pos = e + 1
+  end
+  return true
+end
+
 -- ── Drawing primitives ──────────────────────────────────────
 
 local function fill(y, bg)
@@ -570,13 +585,13 @@ local function drawRecipesList()
     end,
   })
 
-  local sq = state.searchQuery:lower()
+  local sq = state.searchQuery
   local filtered = {}
   for _, r in ipairs(modFiltered) do
     if
       sq == ""
-      or stripMod(r.name):lower():find(sq, 1, true)
-      or resolveDisplay(r.name):lower():find(sq, 1, true)
+      or matchesQuery(stripMod(r.name), sq)
+      or matchesQuery(resolveDisplay(r.name), sq)
     then
       table.insert(filtered, r)
     end
@@ -1001,7 +1016,8 @@ local function drawNewRecipe()
         recipeItems, craftedItem = a, b
       end
       local name = craftedItem.name
-      local exists = pcall(Recipes.getRecipe, name)
+      local exists =
+        Recipes.findExisting(name, craftedItem.displayName) ~= nil
       state.pendingRecipe = {
         items = recipeItems,
         craftedItem = craftedItem,
@@ -1460,12 +1476,12 @@ local function drawStockList()
 
   local items = modFiltered
   if state.searchQuery ~= "" then
-    local sq = state.searchQuery:lower()
+    local sq = state.searchQuery
     local filtered = {}
     for _, item in ipairs(modFiltered) do
       if
-        stripMod(item.name):lower():find(sq, 1, true)
-        or resolveDisplay(item.name):lower():find(sq, 1, true)
+        matchesQuery(stripMod(item.name), sq)
+        or matchesQuery(resolveDisplay(item.name), sq)
       then
         table.insert(filtered, item)
       end
