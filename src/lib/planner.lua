@@ -60,7 +60,26 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals)
   end
 
   expand(recipeName, neededCount, false)
-  return plan
+
+  -- Merge duplicate steps: the same recipe can be reached through several
+  -- branches of the tree (e.g. two sub-crafts each needing glass). Combine them
+  -- into one step so the item is crafted all at once instead of in scattered
+  -- batches. The merged step keeps the position of its FIRST occurrence, which
+  -- still sits after all of its ingredients and before every consumer, so the
+  -- plan order (sub-crafts first, target last) stays valid.
+  local merged = {}
+  local indexByName = {}
+  for _, step in ipairs(plan) do
+    local at = indexByName[step.name]
+    if at then
+      merged[at].craftsCount = merged[at].craftsCount + step.craftsCount
+    else
+      table.insert(merged, step)
+      indexByName[step.name] = #merged
+    end
+  end
+
+  return merged
 end
 
 -- Simulates plan execution against current stock and collects all shortfalls.
