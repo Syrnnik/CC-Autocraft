@@ -173,20 +173,55 @@ function Recipes.saveAllRecipes(recipes)
   end
 end
 
+-- Locates the actual storage key for a recipe identity token: either an exact
+-- key returned by getAllRecipes, or a bare item name (matching the first
+-- variant with that name). Returns nil when nothing matches.
+local function resolveStoredKey(recipes, token)
+  if recipes[token] then
+    return token
+  end
+  for key, recipe in pairs(recipes) do
+    if recipe.name == token then
+      return key
+    end
+  end
+  return nil
+end
+
 function Recipes.addNewRecipe(newRecipe)
   local recipes = Recipes.getAllRecipes()
 
-  local recipeName = newRecipe.name
+  local name = newRecipe.name
+  local displayName = newRecipe.displayName
 
-  -- * This variant store one recipe for each item
-  recipes[recipeName] = newRecipe
+  -- Recipe identity is (name, displayName): reuse the existing slot only when
+  -- BOTH match, so a same-name item with a different displayName is stored as a
+  -- separate recipe instead of overwriting the old one.
+  local key
+  for k, recipe in pairs(recipes) do
+    if recipe.name == name and recipe.displayName == displayName then
+      key = k
+      break
+    end
+  end
 
-  -- * This variant can store many recipes for each item (future)
-  -- if not recipes[recipeName] then
-  --   recipes[recipeName] = {}
-  -- end
-  -- table.insert(recipes[recipeName], newRecipe)
+  -- No matching variant yet: take the bare name, or name~N when the name is
+  -- already occupied by a different-displayName variant. The suffix is opaque —
+  -- recipes are always located by identity or by their stored key, never by
+  -- parsing it — so it stays JSON-safe (no exotic separators in map keys).
+  if not key then
+    if recipes[name] == nil then
+      key = name
+    else
+      local i = 1
+      while recipes[name .. "~" .. i] ~= nil do
+        i = i + 1
+      end
+      key = name .. "~" .. i
+    end
+  end
 
+  recipes[key] = newRecipe
   Recipes.saveAllRecipes(recipes)
 end
 
@@ -246,19 +281,20 @@ end
 -- Updates type, processor(s), and resultProcessor of an existing recipe.
 -- itemProcessors: { [itemName] = processorName } for machine recipes.
 function Recipes.updateRecipeProcessor(
-  recipeName,
+  key,
   type,
   processor,
   resultProcessor,
   itemProcessors
 )
   local recipes = Recipes.getAllRecipes()
+  local storeKey = resolveStoredKey(recipes, key)
 
-  if not recipes[recipeName] then
-    Logger.raiseError(string.format("Recipe '%s' not found", recipeName))
+  if not storeKey then
+    Logger.raiseError(string.format("Recipe '%s' not found", key))
   end
 
-  local recipe = recipes[recipeName]
+  local recipe = recipes[storeKey]
   recipe.type = type
 
   if type == "machine" then
@@ -274,24 +310,28 @@ function Recipes.updateRecipeProcessor(
   end
 
   Recipes.saveAllRecipes(recipes)
-  Logger.printSuccess(string.format("Processor updated for '%s'", recipeName))
+  Logger.printSuccess(string.format("Processor updated for '%s'", recipe.name))
 end
 
-function Recipes.deleteRecipe(recipeName)
+function Recipes.deleteRecipe(key)
   local recipes = Recipes.getAllRecipes()
+  local storeKey = resolveStoredKey(recipes, key)
 
-  if not recipes[recipeName] then
-    Logger.raiseError(string.format("Recipe '%s' not found", recipeName))
+  if not storeKey then
+    Logger.raiseError(string.format("Recipe '%s' not found", key))
   end
 
-  recipes[recipeName] = nil
+  recipes[storeKey] = nil
   Recipes.saveAllRecipes(recipes)
-  Logger.printSuccess(string.format("Recipe '%s' deleted", recipeName))
+  Logger.printSuccess(string.format("Recipe '%s' deleted", storeKey))
 end
 
+-- Looks up a recipe by item name (used by the planner and CLI, which only know
+-- the name). When several variants share a name, returns the first one found.
 function Recipes.getRecipe(recipeName)
   local allRecipes = Recipes.getAllRecipes()
-  local recipe = allRecipes[recipeName]
+  local key = resolveStoredKey(allRecipes, recipeName)
+  local recipe = key and allRecipes[key]
 
   if not recipe then
     Logger.raiseError(string.format("Recipe '%s' not found", recipeName))
@@ -300,14 +340,24 @@ function Recipes.getRecipe(recipeName)
   return recipe
 end
 
+-- Exact lookup by the storage key from getAllRecipes: identifies a single
+-- name+displayName variant. Unlike getRecipe it returns nil when missing
+-- instead of raising.
+function Recipes.getRecipeByKey(key)
+  local allRecipes = Recipes.getAllRecipes()
+  local storeKey = resolveStoredKey(allRecipes, key)
+  return storeKey and allRecipes[storeKey] or nil
+end
+
 -- Finds an existing recipe that matches BOTH the item id (name) and the
 -- displayName. Returns the recipe and its storage key, or nil if none matches.
 function Recipes.findExisting(name, displayName)
   local recipes = Recipes.getAllRecipes()
-  local recipe = name and recipes[name]
 
-  if recipe and recipe.displayName == displayName then
-    return recipe, name
+  for key, recipe in pairs(recipes) do
+    if recipe.name == name and recipe.displayName == displayName then
+      return recipe, key
+    end
   end
 
   return nil

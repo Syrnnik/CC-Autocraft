@@ -9,7 +9,11 @@ local Planner = {}
 -- so items already in stock are not crafted unnecessarily.
 -- Items without a recipe are treated as base materials (must be in stock).
 -- Returns list of { name, craftsCount, recipe }.
-function Planner.buildCraftPlan(recipeName, neededCount, totals)
+-- rootRecipe: optional exact recipe for the target item. When the target name
+-- has several variants (same name, different displayName), pass the specific
+-- one to craft so the root resolves to it instead of an arbitrary variant.
+-- Sub-crafts are still resolved by name (recipe.items carry no displayName).
+function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
   local plan = {}
   -- Virtual stock: real stock minus items already allocated to plan steps.
   -- Surplus from crafts (e.g. recipe yields 4, only 3 needed) is tracked too.
@@ -22,7 +26,7 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals)
 
   -- useStock: for sub-crafts, consume from virtual stock first, craft only
   -- the remainder. For the root item always craft the full requested amount.
-  local function expand(name, count, useStock)
+  local function expand(name, count, useStock, explicitRecipe)
     local stillNeeded = count
 
     if useStock then
@@ -35,10 +39,14 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals)
       available[name] = 0
     end
 
-    local ok, recipe = pcall(Recipes.getRecipe, name)
-    if not ok then
-      -- Base material: no recipe, must come from stock.
-      return
+    local recipe = explicitRecipe
+    if not recipe then
+      local ok, r = pcall(Recipes.getRecipe, name)
+      if not ok then
+        -- Base material: no recipe, must come from stock.
+        return
+      end
+      recipe = r
     end
 
     local craftsCount = math.ceil(stillNeeded / recipe.count)
@@ -59,7 +67,7 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals)
     )
   end
 
-  expand(recipeName, neededCount, false)
+  expand(recipeName, neededCount, false, rootRecipe)
 
   -- Merge duplicate steps: the same recipe can be reached through several
   -- branches of the tree (e.g. two sub-crafts each needing glass). Combine them

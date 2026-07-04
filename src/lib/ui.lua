@@ -17,13 +17,14 @@ local pendingTask = nil
 local state = {
   tab = "recipes",
   page = 1,
-  recipes = {}, -- { name, count }
+  recipes = {}, -- { key, name, displayName, count }
   modTab = "all",
   modTabOffset = 0,
   stockModTab = "all",
   stockModTabOffset = 0,
-  deleteTarget = nil, -- recipe name pending deletion
-  editTarget = nil, -- recipe name being edited (display hint)
+  deleteTarget = nil, -- recipe storage key pending deletion
+  editTarget = nil, -- recipe storage key being edited
+  editTargetName = nil, -- item name of the recipe being edited (for display)
   stockItems = {}, -- { name, count } sorted by name
   stockPage = 1,
   type = "crafter", -- "crafter" | "machine"
@@ -62,6 +63,7 @@ local state = {
   pendingRecipe = nil,
   -- craft screen state
   craftItem = nil, -- full item name being crafted
+  craftKey = nil, -- storage key of the exact recipe variant to craft (or nil)
   craftCount = 1,
   craftMsg = nil,
   craftMsgIsErr = false,
@@ -171,7 +173,7 @@ local function drawTable(opts)
   local hName = opts.headerName or "ITEM"
   local maxNameLen = #hName -- minimum: header must always fit
   for _, item in ipairs(opts.allItems or items) do
-    local dn = displayName(item.name)
+    local dn = displayName(item.name, item)
     if #dn > maxNameLen then
       maxNameLen = #dn
     end
@@ -208,7 +210,7 @@ local function drawTable(opts)
 
       fill(row, rowBg)
 
-      local dn = truncate(displayName(item.name), itemW)
+      local dn = truncate(displayName(item.name, item), itemW)
       local nameFg = opts.rowFg and opts.rowFg(item) or colors.white
       at(math.max(L, xCount - #dn - 1), row, dn, nameFg, rowBg)
       local countStr = opts.countText and opts.countText(item)
@@ -527,7 +529,9 @@ local function drawTabs()
           state.page = 1
           state.deleteTarget = nil
           state.editTarget = nil
+          state.editTargetName = nil
           state.craftItem = nil
+          state.craftKey = nil
         elseif tab.id == "stock" then
           state.tab = "stock"
           state.stockPage = 1
@@ -543,6 +547,7 @@ local function drawTabs()
           state.msg = nil
           state.pendingRecipe = nil
           state.editTarget = nil
+          state.editTargetName = nil
           reloadMachines()
           if state.type == "machine" then
             reloadMachineItems()
@@ -591,7 +596,7 @@ local function drawRecipesList()
     if
       sq == ""
       or matchesQuery(stripMod(r.name), sq)
-      or matchesQuery(resolveDisplay(r.name), sq)
+      or matchesQuery(r.displayName or resolveDisplay(r.name), sq)
     then
       table.insert(filtered, r)
     end
@@ -605,7 +610,9 @@ local function drawRecipesList()
     setPage = function(p)
       state.page = p
     end,
-    displayName = resolveDisplay,
+    displayName = function(name, item)
+      return (item and item.displayName) or resolveDisplay(name)
+    end,
     rightW = 27,
     emptyMsg = "No recipes yet",
     onRefresh = reloadRecipes,
@@ -613,10 +620,11 @@ local function drawRecipesList()
       local xCraft = xCount + 6
       local xEdit = xCraft + 8
       local xDel = xEdit + 7
-      local captured = item.name
-      if captured == state.deleteTarget then
+      local capturedKey = item.key
+      local capturedName = item.name
+      if capturedKey == state.deleteTarget then
         mkBtn(xCraft, row, "Delete", colors.white, colors.red, function()
-          pcall(Recipes.deleteRecipe, captured)
+          pcall(Recipes.deleteRecipe, capturedKey)
           state.deleteTarget = nil
           reloadRecipes()
         end)
@@ -625,7 +633,8 @@ local function drawRecipesList()
         end)
       else
         mkBtn(xCraft, row, "Craft", colors.black, colors.yellow, function()
-          state.craftItem = captured
+          state.craftItem = capturedName
+          state.craftKey = capturedKey
           state.craftCount = 1
           state.craftMsg = nil
           state.craftMsgIsErr = false
@@ -637,12 +646,13 @@ local function drawRecipesList()
         end)
         mkBtn(xEdit, row, "Edit", colors.lightGray, colors.gray, function()
           state.tab = "new_recipe"
-          state.editTarget = captured
+          state.editTarget = capturedKey
+          state.editTargetName = capturedName
           state.pendingRecipe = nil
           state.msg = nil
           reloadMachines()
-          local ok, recipe = pcall(Recipes.getRecipe, captured)
-          if ok then
+          local recipe = Recipes.getRecipeByKey(capturedKey)
+          if recipe then
             state.type = recipe.type or "crafter"
             state.resultProcessor = recipe.resultProcessor
             state.resultPickerOpen = false
@@ -661,7 +671,7 @@ local function drawRecipesList()
           end
         end)
         mkBtn(xDel, row, "Del", colors.black, colors.red, function()
-          state.deleteTarget = captured
+          state.deleteTarget = capturedKey
         end)
       end
     end,
@@ -968,7 +978,11 @@ local function drawNewRecipe()
       at(
         L,
         cur,
-        "Editing: " .. truncate(resolveDisplay(state.editTarget), W - L - 9),
+        "Editing: "
+          .. truncate(
+            resolveDisplay(state.editTargetName or state.editTarget),
+            W - L - 9
+          ),
         colors.yellow,
         colors.black
       )
@@ -1096,7 +1110,7 @@ local function drawNewRecipe()
             itemProcessors
           )
           if ok then
-            state.msg = "Saved: " .. state.editTarget
+            state.msg = "Saved: " .. (state.editTargetName or state.editTarget)
             state.msgIsErr = false
           else
             state.msg = tostring(err)
@@ -1112,7 +1126,7 @@ local function drawNewRecipe()
             nil
           )
           if ok then
-            state.msg = "Saved: " .. state.editTarget
+            state.msg = "Saved: " .. (state.editTargetName or state.editTarget)
             state.msgIsErr = false
           else
             state.msg = tostring(err)
@@ -1213,7 +1227,11 @@ local function prepareCraftState(name, count)
   state.craftPlan = nil
 end
 
-local function makeCraftTask(name, count)
+-- key: optional storage key of the exact recipe variant to craft. When several
+-- recipes share `name`, this pins the craft to the selected one; nil crafts the
+-- first variant found for that name.
+local function makeCraftTask(name, count, key)
+  local rootRecipe = key and Recipes.getRecipeByKey(key) or nil
   return function(redraw)
     local ok, err = pcall(Crafting.craftItem, name, count, function(i, total)
       state.craftProgress = math.floor(i / total * 100)
@@ -1237,7 +1255,7 @@ local function makeCraftTask(name, count)
       if redraw then
         redraw()
       end
-    end)
+    end, rootRecipe)
     if ok then
       state.craftPlan = nil
       state.craftMsgIsDone = true
@@ -1379,8 +1397,9 @@ local function drawCraftScreen()
       mkBtn(L, cur, "Craft", colors.black, colors.cyan, function()
         local name = state.craftItem
         local count = state.craftCount
+        local key = state.craftKey
         prepareCraftState(name, count)
-        pendingTask = makeCraftTask(name, count)
+        pendingTask = makeCraftTask(name, count, key)
       end)
     end
 
@@ -1901,6 +1920,7 @@ local function drawChecklist()
         end
         state.craftQueue = queue
         state.craftQueueIdx = 1
+        state.craftKey = nil
         state.tab = "craft"
         prepareCraftState(queue[1].name, queue[1].count)
         pendingTask = makeCraftQueueTask(queue)
@@ -1990,6 +2010,7 @@ local function drawChecklist()
         mkBtn(xCraft, row, "Craft", colors.black, colors.yellow, function()
           state.craftQueue = nil
           state.craftQueueIdx = 0
+          state.craftKey = nil
           state.tab = "craft"
           prepareCraftState(captItem.name, captItem.needed)
           pendingTask = makeCraftTask(captItem.name, captItem.needed)
@@ -2027,8 +2048,13 @@ end
 reloadRecipes = function()
   local all = Recipes.getAllRecipes()
   local list = {}
-  for _, recipe in pairs(all) do
-    table.insert(list, { name = recipe.name, count = recipe.count })
+  for key, recipe in pairs(all) do
+    table.insert(list, {
+      key = key,
+      name = recipe.name,
+      displayName = recipe.displayName,
+      count = recipe.count,
+    })
   end
   table.sort(list, function(a, b)
     return stripMod(a.name) < stripMod(b.name)

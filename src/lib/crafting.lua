@@ -514,11 +514,18 @@ end
 -- onStep(current, total): called after each individual craft run (per machine cycle or crafter batch).
 -- onPlan(plan): called once after the plan is built, before execution starts.
 -- onStepDone(): called after each full plan step completes.
-function Crafting.craftItem(recipeName, count, onStep, onPlan, onStepDone)
+function Crafting.craftItem(
+  recipeName,
+  count,
+  onStep,
+  onPlan,
+  onStepDone,
+  rootRecipe
+)
   Logger.printInfo(string.format("Planning '%s' x%d..", recipeName, count))
 
   local totals, maxDmg = Stock.getDurabilityAwareTotals()
-  local plan = Planner.buildCraftPlan(recipeName, count, totals)
+  local plan = Planner.buildCraftPlan(recipeName, count, totals, rootRecipe)
 
   if #plan == 0 then
     Logger.raiseError(string.format("No recipe found for '%s'", recipeName))
@@ -578,9 +585,9 @@ function Crafting.craftItem(recipeName, count, onStep, onPlan, onStepDone)
 end
 
 -- Builds and returns the craft plan without executing it (for UI preview).
-function Crafting.buildPlan(recipeName, count)
+function Crafting.buildPlan(recipeName, count, rootRecipe)
   local totals = Stock.getDurabilityAwareTotals()
-  return Planner.buildCraftPlan(recipeName, count, totals)
+  return Planner.buildCraftPlan(recipeName, count, totals, rootRecipe)
 end
 
 return Crafting
