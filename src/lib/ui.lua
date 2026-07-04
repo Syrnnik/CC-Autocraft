@@ -747,19 +747,32 @@ local function drawMachinePager(
     return prevO
   end
 
-  if needsScroll then
-    local canLeft = offset > 0
-    at(L, y, "<", canLeft and colors.white or colors.gray, colors.black)
-    if canLeft then
-      table.insert(buttons, {
-        x1 = L,
-        x2 = L,
-        y = y,
-        fn = function()
-          setOffset(prevPageOffset())
-        end,
-      })
+  -- Offset of the last page (the one whose window reaches the final label),
+  -- page-aligned like every other offset used here.
+  local function lastPageOffset()
+    local o = 0
+    while calcLastVisible(o) < #labels do
+      o = calcLastVisible(o)
     end
+    return o
+  end
+
+  if needsScroll then
+    -- Wrap-around: at the start, "<" jumps to the last page instead of doing
+    -- nothing, so the end of the list is one tap away.
+    at(L, y, "<", colors.white, colors.black)
+    table.insert(buttons, {
+      x1 = L,
+      x2 = L,
+      y = y,
+      fn = function()
+        if offset > 0 then
+          setOffset(prevPageOffset())
+        else
+          setOffset(lastPageOffset())
+        end
+      end,
+    })
   end
 
   local x = startX
@@ -779,18 +792,20 @@ local function drawMachinePager(
   end
 
   if needsScroll then
-    local canRight = lastVisible < #labels
-    at(W, y, ">", canRight and colors.white or colors.gray, colors.black)
-    if canRight then
-      table.insert(buttons, {
-        x1 = W,
-        x2 = W,
-        y = y,
-        fn = function()
+    -- Wrap-around: at the end, ">" jumps back to the start.
+    at(W, y, ">", colors.white, colors.black)
+    table.insert(buttons, {
+      x1 = W,
+      x2 = W,
+      y = y,
+      fn = function()
+        if lastVisible < #labels then
           setOffset(lastVisible)
-        end,
-      })
-    end
+        else
+          setOffset(0)
+        end
+      end,
+    })
   end
 end
 
