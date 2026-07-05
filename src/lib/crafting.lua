@@ -53,30 +53,42 @@ end
 function Crafting.pushItemsToCrafter(items, fromInterfaceName)
   local fromInterface = Utils.wrapPeripheral(fromInterfaceName)
 
+  -- Push all slots concurrently; failures are collected and raised after.
+  local failedItem = nil
+  local tasks = {}
   for _, item in pairs(items) do
-    local itemName = item.name
-    local itemSlot = item.slot
-    local crafterSlot = item.crafterSlot
-
-    Logger.printInfo(
-      string.format("Pushing '%s' to crafter slot %d", itemName, crafterSlot)
-    )
-
-    local count =
-      fromInterface.pushItems(getCrafter(), itemSlot, item.count, crafterSlot)
-
-    if count == 0 then
-      Logger.raiseError(
+    tasks[#tasks + 1] = function()
+      Logger.printInfo(
         string.format(
-          "Failed to push '%s' from '%s' (%d) to '%s' (%d)",
-          itemName,
-          fromInterfaceName,
-          itemSlot,
-          getCrafter(),
-          crafterSlot
+          "Pushing '%s' to crafter slot %d",
+          item.name,
+          item.crafterSlot
         )
       )
+      local count = fromInterface.pushItems(
+        getCrafter(),
+        item.slot,
+        item.count,
+        item.crafterSlot
+      )
+      if count == 0 and not failedItem then
+        failedItem = item
+      end
     end
+  end
+  Utils.runParallel(tasks)
+
+  if failedItem then
+    Logger.raiseError(
+      string.format(
+        "Failed to push '%s' from '%s' (%d) to '%s' (%d)",
+        failedItem.name,
+        fromInterfaceName,
+        failedItem.slot,
+        getCrafter(),
+        failedItem.crafterSlot
+      )
+    )
   end
 end
 
@@ -85,21 +97,28 @@ function Crafting.returnRecipeItems(items, toInterfaceName)
 
   Logger.printWarning(string.format("Returning items to '%s'", toInterfaceName))
 
+  local failedItem = nil
+  local tasks = {}
   for _, item in pairs(items) do
-    local crafterSlot = item.crafterSlot
-    local count = toInterface.pullItems(getCrafter(), crafterSlot)
-
-    if count == 0 then
-      Logger.raiseError(
-        string.format(
-          "Failed to pull '%s' from '%s' (%d) to '%s'",
-          item.name,
-          getCrafter(),
-          crafterSlot,
-          toInterfaceName
-        )
-      )
+    tasks[#tasks + 1] = function()
+      local count = toInterface.pullItems(getCrafter(), item.crafterSlot)
+      if count == 0 and not failedItem then
+        failedItem = item
+      end
     end
+  end
+  Utils.runParallel(tasks)
+
+  if failedItem then
+    Logger.raiseError(
+      string.format(
+        "Failed to pull '%s' from '%s' (%d) to '%s'",
+        failedItem.name,
+        getCrafter(),
+        failedItem.crafterSlot,
+        toInterfaceName
+      )
+    )
   end
 end
 
@@ -112,12 +131,18 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot, skipSlots)
   )
 
   if not isSpecificSlot then
-    -- Pull everything from all crafter slots (batch craft fills multiple slots)
+    -- Pull everything from all crafter slots (batch craft fills multiple
+    -- slots); all pulls run concurrently.
+    local tasks = {}
     for slot = 1, 16 do
       if not (skipSlots and skipSlots[slot]) then
-        toInterface.pullItems(getCrafter(), slot)
+        local s = slot
+        tasks[#tasks + 1] = function()
+          toInterface.pullItems(getCrafter(), s)
+        end
       end
     end
+    Utils.runParallel(tasks)
     return
   end
 
@@ -143,9 +168,14 @@ end
 function Crafting.craft(items, fromInterfaceName)
   if clearCrafterBeforeCraft then
     local fromInterface = Utils.wrapPeripheral(fromInterfaceName)
+    local tasks = {}
     for slot = 1, 16 do
-      fromInterface.pullItems(getCrafter(), slot)
+      local s = slot
+      tasks[#tasks + 1] = function()
+        fromInterface.pullItems(getCrafter(), s)
+      end
     end
+    Utils.runParallel(tasks)
   end
 
   Crafting.pushItemsToCrafter(items, fromInterfaceName)
@@ -196,21 +226,33 @@ function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
     end
   end
 
+  local failedItem = nil
+  local pushTasks = {}
   for _, item in pairs(machineItems) do
-    Logger.printInfo(
+    pushTasks[#pushTasks + 1] = function()
+      Logger.printInfo(
+        string.format(
+          "Pushing '%s' (slot %d) to '%s'",
+          item.name,
+          item.slot,
+          item.processor
+        )
+      )
+      local pushed = interface.pushItems(item.processor, item.slot, item.count)
+      if pushed == 0 and not failedItem then
+        failedItem = item
+      end
+    end
+  end
+  Utils.runParallel(pushTasks)
+  if failedItem then
+    Logger.raiseError(
       string.format(
-        "Pushing '%s' (slot %d) to '%s'",
-        item.name,
-        item.slot,
-        item.processor
+        "Failed to push '%s' to '%s'",
+        failedItem.name,
+        failedItem.processor
       )
     )
-    local pushed = interface.pushItems(item.processor, item.slot, item.count)
-    if pushed == 0 then
-      Logger.raiseError(
-        string.format("Failed to push '%s' to '%s'", item.name, item.processor)
-      )
-    end
   end
 
   -- Poll: wait until a non-input item appears in resultProcessor
@@ -235,16 +277,22 @@ function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
     os.sleep(0.5)
   end
 
-  -- Always clear all machines (whether success or timeout)
+  -- Always clear all machines (whether success or timeout); one concurrent
+  -- task per machine.
   local seen = {}
+  local clearTasks = {}
   for _, item in pairs(machineItems) do
     if not seen[item.processor] then
       seen[item.processor] = true
-      for slot, _ in pairs(Utils.wrapPeripheral(item.processor).list()) do
-        interface.pullItems(item.processor, slot)
+      local proc = item.processor
+      clearTasks[#clearTasks + 1] = function()
+        for slot, _ in pairs(Utils.wrapPeripheral(proc).list()) do
+          interface.pullItems(proc, slot)
+        end
       end
     end
   end
+  Utils.runParallel(clearTasks)
 
   if not crafted then
     Logger.raiseError(
@@ -284,23 +332,33 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
     end
   end
 
-  -- Push all items for the full batch at once
+  -- Push all items for the full batch at once, concurrently.
   for _, item in pairs(pushList) do
     if not item.processor then
       Logger.raiseError(
         string.format("No processor assigned for '%s' in recipe", item.name)
       )
     end
+  end
+  local failedItem, failedPort
+  local pushTasks = {}
+  for _, item in pairs(pushList) do
     local port = resolveItemPort(item.processor)
-    Logger.printInfo(
-      string.format("Pushing '%s' x%d to '%s'", item.name, item.count, port)
-    )
-    local pushed = stockIn.pushItems(port, item.slot, item.count)
-    if pushed == 0 then
-      Logger.raiseError(
-        string.format("Failed to push '%s' to '%s'", item.name, port)
+    pushTasks[#pushTasks + 1] = function()
+      Logger.printInfo(
+        string.format("Pushing '%s' x%d to '%s'", item.name, item.count, port)
       )
+      local pushed = stockIn.pushItems(port, item.slot, item.count)
+      if pushed == 0 and not failedItem then
+        failedItem, failedPort = item, port
+      end
     end
+  end
+  Utils.runParallel(pushTasks)
+  if failedItem then
+    Logger.raiseError(
+      string.format("Failed to push '%s' to '%s'", failedItem.name, failedPort)
+    )
   end
 
   -- Collect results until we have batchSize * recipe.count items.
@@ -350,25 +408,34 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
     end
   end
 
-  -- Always clear all machines
+  -- Always clear all machines; one concurrent task per machine.
   local seen = {}
+  local clearTasks = {}
   for _, item in pairs(recipe.items) do
-    if not seen[item.processor] then
+    if item.processor and not seen[item.processor] then
       seen[item.processor] = true
       local port = resolveItemPort(item.processor)
-      for slot, _ in pairs(Utils.wrapPeripheral(port).list()) do
-        stockOut.pullItems(port, slot)
+      clearTasks[#clearTasks + 1] = function()
+        for slot, _ in pairs(Utils.wrapPeripheral(port).list()) do
+          stockOut.pullItems(port, slot)
+        end
       end
     end
   end
+  Utils.runParallel(clearTasks)
 end
 
 -- Pull all items from the crafter back to the recipe interface
 function Crafting.clearCrafter()
   local interface = Utils.wrapPeripheral(interfaceName())
+  local tasks = {}
   for slot = 1, 16 do
-    interface.pullItems(getCrafter(), slot)
+    local s = slot
+    tasks[#tasks + 1] = function()
+      interface.pullItems(getCrafter(), s)
+    end
   end
+  Utils.runParallel(tasks)
   Logger.printInfo("Crafter cleared")
 end
 
@@ -376,10 +443,17 @@ end
 -- back to stock. Only touches the slots actually used for recipe input.
 function Crafting.clearRecipeInterface()
   local stock = Utils.wrapPeripheral(stockOutName())
+  local tasks = {}
   for _, slot in ipairs(patternSlots()) do
-    stock.pullItems(interfaceName(), slot)
+    local s = slot
+    tasks[#tasks + 1] = function()
+      stock.pullItems(interfaceName(), s)
+    end
   end
-  stock.pullItems(interfaceName(), Crafting.getSlotToPutItem())
+  tasks[#tasks + 1] = function()
+    stock.pullItems(interfaceName(), Crafting.getSlotToPutItem())
+  end
+  Utils.runParallel(tasks)
   Logger.printInfo("Recipe interface cleared")
 end
 
@@ -397,26 +471,31 @@ function Crafting.craftNewRecipe()
   Logger.printInfo("Crafting..")
   Crafting.craft(recipeItems, interfaceName())
 
-  -- Auto-detect catalysts: pull 1 item from each recipe crafter slot back to its
-  -- original interface slot. If the same item name returns, it wasn't consumed.
+  -- Auto-detect catalysts: pull 1 item from each recipe crafter slot back to
+  -- its original interface slot. If the same item name returns, it wasn't
+  -- consumed. Each slot's pull+inspect pair runs as its own concurrent task.
   local interface = Utils.wrapPeripheral(interfaceName())
+  local catalystTasks = {}
   for _, item in ipairs(recipeItems) do
-    local pulled =
-      interface.pullItems(getCrafter(), item.crafterSlot, 1, item.slot)
-    if pulled > 0 then
-      local detail = interface.getItemDetail(item.slot)
-      if detail and detail.name == item.name then
-        item.catalyst = true
-        Logger.printInfo(
-          string.format(
-            "Catalyst detected: '%s' (crafter slot %d)",
-            item.name,
-            item.crafterSlot
+    catalystTasks[#catalystTasks + 1] = function()
+      local pulled =
+        interface.pullItems(getCrafter(), item.crafterSlot, 1, item.slot)
+      if pulled > 0 then
+        local detail = interface.getItemDetail(item.slot)
+        if detail and detail.name == item.name then
+          item.catalyst = true
+          Logger.printInfo(
+            string.format(
+              "Catalyst detected: '%s' (crafter slot %d)",
+              item.name,
+              item.crafterSlot
+            )
           )
-        )
+        end
       end
     end
   end
+  Utils.runParallel(catalystTasks)
 
   local craftedItem = Crafting.getCraftedItem(interfaceName(), true)
   return recipeItems, craftedItem
@@ -495,9 +574,14 @@ function Crafting.processCraft(recipe, batchSize, onEach)
     -- Always return catalysts to stock after the batch (or on error)
     if #catalysts > 0 then
       local stockOut = Utils.wrapPeripheral(stockOutName())
+      local tasks = {}
       for _, cat in ipairs(catalysts) do
-        stockOut.pullItems(getCrafter(), cat.crafterSlot)
+        local slot = cat.crafterSlot
+        tasks[#tasks + 1] = function()
+          stockOut.pullItems(getCrafter(), slot)
+        end
       end
+      Utils.runParallel(tasks)
     end
 
     if not ok then

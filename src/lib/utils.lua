@@ -12,6 +12,21 @@ function Utils.wrapPeripheral(name)
   return p
 end
 
+-- Runs a list of functions concurrently via parallel.waitForAll. Peripheral
+-- transfers cost ~1 game tick each; run in parallel coroutines they overlap
+-- instead of paying that tick sequentially, so e.g. filling a 3x3 crafting
+-- grid takes ~1 tick instead of ~9.
+function Utils.runParallel(fns)
+  if #fns == 0 then
+    return
+  end
+  if #fns == 1 then
+    fns[1]()
+    return
+  end
+  parallel.waitForAll(table.unpack(fns))
+end
+
 function Utils.stripMod(name)
   return name:match("^[^:]+:(.+)") or name
 end
