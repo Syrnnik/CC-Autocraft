@@ -396,9 +396,10 @@ local function drawModTabs(y, items, opts)
 
     local function prevPageOffset()
       local prevO, o = 0, 0
-      while true do
+      -- Stop exactly one page back (see drawMachinePager for the reasoning).
+      while o < modOffset do
         local lv = calcLastVisible(o)
-        if lv >= modOffset then
+        if lv <= o then
           break
         end
         prevO = o
@@ -753,9 +754,12 @@ local function drawMachinePager(
 
   local function prevPageOffset()
     local prevO, o = 0, 0
-    while true do
+    -- Walk page boundaries (0, calcLastVisible(0), ...) up to the current
+    -- offset and return the one just before it. Using `o < offset` (not
+    -- `lv >= offset`) stops exactly one page back, not two.
+    while o < offset do
       local lv = calcLastVisible(o)
-      if lv >= offset then
+      if lv <= o then
         break
       end
       prevO = o
@@ -1003,6 +1007,51 @@ local function drawNewRecipe()
     cur = cur + 2 -- hint + empty gap
   end
 
+  -- Saves the freshly test-crafted recipe (state.pendingRecipe). Shared by the
+  -- always-visible Save button in the action row and the Save in the Result
+  -- section below (which can scroll off-screen when a machine recipe has many
+  -- item rows).
+  local function savePendingRecipe()
+    local pr = state.pendingRecipe
+    if not pr then
+      return
+    end
+    if state.type == "machine" then
+      for _, item in ipairs(pr.items) do
+        if not item.processor then
+          state.msg = "Assign machine to all items"
+          state.msgIsErr = true
+          return
+        end
+      end
+      if not state.resultProcessor then
+        state.msg = "Select result machine"
+        state.msgIsErr = true
+        return
+      end
+    end
+    local processor = state.type ~= "machine" and Roles.get("crafter") or nil
+    local ok, err = pcall(
+      Recipes.saveRecipe,
+      pr.items,
+      pr.craftedItem,
+      state.type,
+      processor,
+      state.resultProcessor
+    )
+    if ok then
+      state.pendingRecipe = nil
+      state.editTarget = nil
+      state.editTargetName = nil
+      state.msg = nil
+      reloadRecipes()
+    else
+      state.msg = tostring(err)
+      state.msgIsErr = true
+      state.pendingRecipe = nil
+    end
+  end
+
   -- ── Action buttons ───────────────────────────────────────────
   local testLabel = "Test Craft"
   mkBtn(L, cur, testLabel, colors.black, colors.lightBlue, function()
@@ -1090,9 +1139,23 @@ local function drawNewRecipe()
     end
   end)
 
-  if state.editTarget then
+  -- Slot after Clear: while a recipe is pending (post Test Craft) show an
+  -- always-visible Save for it -- [Test Craft] [Clear] [Save] -- so it stays
+  -- reachable even when the Result-section Save scrolls off-screen. Otherwise,
+  -- when editing an existing recipe, this slot updates its machine assignment.
+  local afterClearX = clearX + #" Clear " + 1
+  if state.pendingRecipe then
     mkBtn(
-      clearX + #" Clear " + 1,
+      afterClearX,
+      cur,
+      "Save",
+      colors.black,
+      colors.yellow,
+      savePendingRecipe
+    )
+  elseif state.editTarget then
+    mkBtn(
+      afterClearX,
       cur,
       "Save",
       colors.white,
@@ -1179,41 +1242,7 @@ local function drawNewRecipe()
   end
 
   local saveY = resultY + 4
-  mkBtn(L, saveY, "Save", colors.black, colors.yellow, function()
-    if state.type == "machine" then
-      for _, item in ipairs(pr.items) do
-        if not item.processor then
-          state.msg = "Assign machine to all items"
-          state.msgIsErr = true
-          return
-        end
-      end
-      if not state.resultProcessor then
-        state.msg = "Select result machine"
-        state.msgIsErr = true
-        return
-      end
-    end
-    local processor = state.type ~= "machine" and Roles.get("crafter") or nil
-    local ok, err = pcall(
-      Recipes.saveRecipe,
-      pr.items,
-      pr.craftedItem,
-      state.type,
-      processor,
-      state.resultProcessor
-    )
-    if ok then
-      state.pendingRecipe = nil
-      state.editTarget = nil
-      state.msg = nil
-      reloadRecipes()
-    else
-      state.msg = tostring(err)
-      state.msgIsErr = true
-      state.pendingRecipe = nil
-    end
-  end)
+  mkBtn(L, saveY, "Save", colors.black, colors.yellow, savePendingRecipe)
   mkBtn(L + #"Save" + 3, saveY, "Cancel", colors.white, colors.gray, function()
     state.pendingRecipe = nil
     state.editTarget = nil
@@ -2089,10 +2118,14 @@ reloadMachines = function()
       known[p] = true
     end
   end
+  -- Only offer machines the user has actually named on the Labels tab; an
+  -- unlabelled inventory is just noise in the picker (can't be identified).
+  local labels = Labels.getAll()
   local machines = {}
   for _, name in ipairs(peripheral.getNames()) do
     if
       not known[name]
+      and labels[name]
       and name:find(":", 1, true)
       and peripheral.hasType(name, "inventory")
     then
