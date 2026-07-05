@@ -24,6 +24,12 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
     available[k] = v
   end
 
+  -- One recipe snapshot per plan build: getRecipe re-reads and parses the
+  -- whole recipes file on every call, which multiplied across the tree made
+  -- planning slow. Loading once here turns every lookup below into a plain
+  -- table read, and a fresh snapshot per plan still picks up recipe edits.
+  local allRecipes = Recipes.getAllRecipes()
+
   -- Items currently being expanded (the path from the root down to here). Used
   -- to break reversible-recipe cycles like gold_ingot <-> gold_block.
   local onStack = {}
@@ -44,13 +50,10 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
     end
 
     local recipe = explicitRecipe
+      or Recipes.getFromSnapshot(allRecipes, name)
     if not recipe then
-      local ok, r = pcall(Recipes.getRecipe, name)
-      if not ok then
-        -- Base material: no recipe, must come from stock.
-        return
-      end
-      recipe = r
+      -- Base material: no recipe, must come from stock.
+      return
     end
 
     local ingredients = Recipes.getRequiredItemsPlainList(recipe)

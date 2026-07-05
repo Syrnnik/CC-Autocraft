@@ -349,6 +349,17 @@ function Recipes.getRecipeByKey(key)
   return storeKey and allRecipes[storeKey] or nil
 end
 
+-- Resolves a recipe from an already-loaded recipes table (as returned by
+-- getAllRecipes) without re-reading the file. Same lookup semantics as
+-- getRecipe: exact storage key first, then the first variant matching the
+-- item name. Returns nil when nothing matches. Callers that do many lookups
+-- (the planner) load one snapshot and use this instead of getRecipe, which
+-- parses the whole recipes file on every call.
+function Recipes.getFromSnapshot(recipes, name)
+  local key = resolveStoredKey(recipes, name)
+  return key and recipes[key] or nil
+end
+
 -- Finds an existing recipe that matches BOTH the item id (name) and the
 -- displayName. Returns the recipe and its storage key, or nil if none matches.
 function Recipes.findExisting(name, displayName)
