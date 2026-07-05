@@ -1263,6 +1263,24 @@ local function prepareCraftState(name, count)
   state.craftPlan = nil
 end
 
+-- Removes a completed step from the on-screen plan. Plan execution is
+-- pipelined, so steps can finish out of order -- remove by name, not the head.
+local function removePlanStep(stepName)
+  if not state.craftPlan then
+    return
+  end
+  if stepName then
+    for i, s in ipairs(state.craftPlan) do
+      if s.name == stepName then
+        table.remove(state.craftPlan, i)
+        return
+      end
+    end
+  elseif #state.craftPlan > 0 then
+    table.remove(state.craftPlan, 1)
+  end
+end
+
 -- key: optional storage key of the exact recipe variant to craft. When several
 -- recipes share `name`, this pins the craft to the selected one; nil crafts the
 -- first variant found for that name.
@@ -1284,10 +1302,8 @@ local function makeCraftTask(name, count, key)
       if redraw then
         redraw()
       end
-    end, function()
-      if state.craftPlan and #state.craftPlan > 0 then
-        table.remove(state.craftPlan, 1)
-      end
+    end, function(stepName)
+      removePlanStep(stepName)
       if redraw then
         redraw()
       end
@@ -1338,10 +1354,8 @@ local function makeCraftQueueTask(queue)
             redraw()
           end
         end,
-        function()
-          if state.craftPlan and #state.craftPlan > 0 then
-            table.remove(state.craftPlan, 1)
-          end
+        function(stepName)
+          removePlanStep(stepName)
           if redraw then
             redraw()
           end

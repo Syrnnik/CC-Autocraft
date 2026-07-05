@@ -34,6 +34,43 @@ local newRecipeInterfaceRowSize = Config.NEW_RECIPE_INTERFACE_ROW_SIZE
 
 local Crafting = {}
 
+-- ── Cooperative locks for pipelined plan execution ──────────
+-- Plan steps run as parallel coroutines (see craftItem). Multitasking in CC
+-- is cooperative, so a check-and-set with no yield in between is atomic.
+
+-- Serialises the stock claim+push phase: getItemsFor*Recipe lists stock
+-- slots and claims counts from them, so two steps doing that concurrently
+-- could claim the same items.
+local stockBusy = false
+local function lockStock()
+  while stockBusy do
+    os.sleep(0.05)
+  end
+  stockBusy = true
+end
+local function unlockStock()
+  stockBusy = false
+end
+
+-- Per-machine exclusivity: two steps sharing a machine would mix their
+-- inputs and confuse result polling. Keys are resolved port names, acquired
+-- in sorted order so steps with overlapping machine sets can't deadlock.
+local machineBusy = {}
+local function lockMachines(ports)
+  table.sort(ports)
+  for _, port in ipairs(ports) do
+    while machineBusy[port] do
+      os.sleep(0.05)
+    end
+    machineBusy[port] = true
+  end
+end
+local function unlockMachines(ports)
+  for _, port in ipairs(ports) do
+    machineBusy[port] = nil
+  end
+end
+
 local function patternSlots()
   local slots = {}
   for row = 0, patternSize - 1 do
@@ -312,7 +349,6 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
   batchSize = batchSize or 1
   local stockIn = Utils.wrapPeripheral(stockInName())
   local stockOut = Utils.wrapPeripheral(stockOutName())
-  local pushList = Stock.getItemsForMachineRecipe(recipe, batchSize)
 
   -- Resolve labels → port names once (Utils.wrapPeripheral will error if not found)
   local resultPort = Labels.resolvePort(recipe.resultProcessor)
@@ -324,6 +360,52 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
     return portCache[proc]
   end
 
+  -- Hold every machine involved for the whole cycle (push → poll → clear):
+  -- a concurrent step pushing into the same machine would mix inputs.
+  local lockPorts = { resultPort }
+  do
+    local seenPort = { [resultPort] = true }
+    for _, item in pairs(recipe.items) do
+      if item.processor then
+        local port = resolveItemPort(item.processor)
+        if not seenPort[port] then
+          seenPort[port] = true
+          lockPorts[#lockPorts + 1] = port
+        end
+      end
+    end
+  end
+  lockMachines(lockPorts)
+
+  local okBody, errBody = pcall(function()
+    Crafting.runMachineCycle(
+      recipe,
+      batchSize,
+      onEach,
+      stockIn,
+      stockOut,
+      resultPort,
+      resolveItemPort
+    )
+  end)
+
+  unlockMachines(lockPorts)
+  if not okBody then
+    error(errBody, 0)
+  end
+end
+
+-- Body of one machine craft cycle; assumes the involved machines are already
+-- locked by craftMachine.
+function Crafting.runMachineCycle(
+  recipe,
+  batchSize,
+  onEach,
+  stockIn,
+  stockOut,
+  resultPort,
+  resolveItemPort
+)
   -- Items placed directly into the result machine (ignored during polling)
   local inputsToResult = {}
   for _, item in pairs(recipe.items) do
@@ -332,33 +414,46 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
     end
   end
 
-  -- Push all items for the full batch at once, concurrently.
-  for _, item in pairs(pushList) do
-    if not item.processor then
-      Logger.raiseError(
-        string.format("No processor assigned for '%s' in recipe", item.name)
-      )
-    end
-  end
-  local failedItem, failedPort
-  local pushTasks = {}
-  for _, item in pairs(pushList) do
-    local port = resolveItemPort(item.processor)
-    pushTasks[#pushTasks + 1] = function()
-      Logger.printInfo(
-        string.format("Pushing '%s' x%d to '%s'", item.name, item.count, port)
-      )
-      local pushed = stockIn.pushItems(port, item.slot, item.count)
-      if pushed == 0 and not failedItem then
-        failedItem, failedPort = item, port
+  -- Claim stock slots and push the full batch under the stock lock so a
+  -- concurrent step can't claim the same slots.
+  lockStock()
+  local okPush, errPush = pcall(function()
+    local pushList = Stock.getItemsForMachineRecipe(recipe, batchSize)
+    for _, item in pairs(pushList) do
+      if not item.processor then
+        Logger.raiseError(
+          string.format("No processor assigned for '%s' in recipe", item.name)
+        )
       end
     end
-  end
-  Utils.runParallel(pushTasks)
-  if failedItem then
-    Logger.raiseError(
-      string.format("Failed to push '%s' to '%s'", failedItem.name, failedPort)
-    )
+    local failedItem, failedPort
+    local pushTasks = {}
+    for _, item in pairs(pushList) do
+      local port = resolveItemPort(item.processor)
+      pushTasks[#pushTasks + 1] = function()
+        Logger.printInfo(
+          string.format("Pushing '%s' x%d to '%s'", item.name, item.count, port)
+        )
+        local pushed = stockIn.pushItems(port, item.slot, item.count)
+        if pushed == 0 and not failedItem then
+          failedItem, failedPort = item, port
+        end
+      end
+    end
+    Utils.runParallel(pushTasks)
+    if failedItem then
+      Logger.raiseError(
+        string.format(
+          "Failed to push '%s' to '%s'",
+          failedItem.name,
+          failedPort
+        )
+      )
+    end
+  end)
+  unlockStock()
+  if not okPush then
+    error(errPush, 0)
   end
 
   -- Collect results until we have batchSize * recipe.count items.
@@ -546,46 +641,56 @@ function Crafting.processCraft(recipe, batchSize, onEach)
       done = done + chunk
     end
   else
-    local catalysts = Stock.getCatalystItemsForRecipe(recipe)
-    local catalystSlots = {}
-    for _, cat in ipairs(catalysts) do
-      catalystSlots[cat.crafterSlot] = true
-    end
+    -- The crafter and the stock claim+push cycle stay exclusive for the
+    -- whole batch: catalysts sit in the crafter between chunks and every
+    -- chunk lists stock and claims slots from it.
+    lockStock()
+    local okBatch, errBatch = pcall(function()
+      local catalysts = Stock.getCatalystItemsForRecipe(recipe)
+      local catalystSlots = {}
+      for _, cat in ipairs(catalysts) do
+        catalystSlots[cat.crafterSlot] = true
+      end
 
-    if #catalysts > 0 then
-      Crafting.pushItemsToCrafter(catalysts, stockInName())
-    end
+      if #catalysts > 0 then
+        Crafting.pushItemsToCrafter(catalysts, stockInName())
+      end
 
-    local maxBatch = Stock.getMaxBatchForRecipe(recipe)
-    local done = 0
-    local ok, err = pcall(function()
-      while done < batchSize do
-        local chunk = math.min(maxBatch, batchSize - done)
-        local stockItems = Stock.getItemsForRecipe(recipe, chunk)
-        Crafting.craft(stockItems, stockInName())
-        Crafting.getCraftedItem(stockOutName(), false, catalystSlots)
-        done = done + chunk
-        if onEach then
-          onEach()
+      local maxBatch = Stock.getMaxBatchForRecipe(recipe)
+      local done = 0
+      local ok, err = pcall(function()
+        while done < batchSize do
+          local chunk = math.min(maxBatch, batchSize - done)
+          local stockItems = Stock.getItemsForRecipe(recipe, chunk)
+          Crafting.craft(stockItems, stockInName())
+          Crafting.getCraftedItem(stockOutName(), false, catalystSlots)
+          done = done + chunk
+          if onEach then
+            onEach()
+          end
         end
+      end)
+
+      -- Always return catalysts to stock after the batch (or on error)
+      if #catalysts > 0 then
+        local stockOut = Utils.wrapPeripheral(stockOutName())
+        local tasks = {}
+        for _, cat in ipairs(catalysts) do
+          local slot = cat.crafterSlot
+          tasks[#tasks + 1] = function()
+            stockOut.pullItems(getCrafter(), slot)
+          end
+        end
+        Utils.runParallel(tasks)
+      end
+
+      if not ok then
+        error(err, 0)
       end
     end)
-
-    -- Always return catalysts to stock after the batch (or on error)
-    if #catalysts > 0 then
-      local stockOut = Utils.wrapPeripheral(stockOutName())
-      local tasks = {}
-      for _, cat in ipairs(catalysts) do
-        local slot = cat.crafterSlot
-        tasks[#tasks + 1] = function()
-          stockOut.pullItems(getCrafter(), slot)
-        end
-      end
-      Utils.runParallel(tasks)
-    end
-
-    if not ok then
-      error(err, 0)
+    unlockStock()
+    if not okBatch then
+      error(errBatch, 0)
     end
   end
 
@@ -594,10 +699,14 @@ function Crafting.processCraft(recipe, batchSize, onEach)
   )
 end
 
--- Entry point for multi-level crafting: builds a plan and executes it in order.
+-- Entry point for multi-level crafting: builds a plan and executes it.
+-- Execution is pipelined: independent steps run concurrently (the crafter
+-- keeps working while a machine smelts); a step waits only for the earlier
+-- steps that produce its ingredients.
 -- onStep(current, total): called after each individual craft run (per machine cycle or crafter batch).
 -- onPlan(plan): called once after the plan is built, before execution starts.
--- onStepDone(): called after each full plan step completes.
+-- onStepDone(stepName): called after each full plan step completes. Steps can
+--   finish out of plan order.
 function Crafting.craftItem(
   recipeName,
   count,
@@ -643,24 +752,98 @@ function Crafting.craftItem(
     end
   end
 
+  -- ── Pipelined execution ─────────────────────────────────────
+  -- Every plan step runs as a coroutine and starts once all earlier steps
+  -- that produce one of its ingredients have finished. Peripheral safety
+  -- comes from the stock/machine locks above. UI callbacks may draw on a
+  -- monitor (peripheral calls yield), so they are serialised to keep two
+  -- steps from interleaving a redraw.
   local doneRuns = 0
-  for _, step in ipairs(plan) do
-    Logger.printInfo(
-      string.format(
-        "Crafting '%s' x%d craft(s) as one batch..",
-        step.name,
-        step.craftsCount
-      )
-    )
-    Crafting.processCraft(step.recipe, step.craftsCount, function()
-      doneRuns = doneRuns + 1
-      if onStep then
-        onStep(doneRuns, totalRuns)
-      end
-    end)
-    if onStepDone then
-      onStepDone()
+  local doneSteps = {}
+  local failed = nil
+
+  local uiBusy = false
+  local function notify(fn, ...)
+    if not fn then
+      return
     end
+    while uiBusy do
+      os.sleep(0.05)
+    end
+    uiBusy = true
+    local ok, err = pcall(fn, ...)
+    uiBusy = false
+    if not ok then
+      error(err, 0)
+    end
+  end
+
+  local runners = {}
+  for i, step in ipairs(plan) do
+    -- Earlier plan steps that produce one of this step's ingredients.
+    local deps = {}
+    for _, ingredient in
+      ipairs(Recipes.getRequiredItemsPlainList(step.recipe))
+    do
+      for j = 1, i - 1 do
+        if plan[j].name == ingredient.name then
+          deps[#deps + 1] = ingredient.name
+          break
+        end
+      end
+    end
+
+    runners[i] = function()
+      -- Wait for producers; bail out early if another step failed.
+      while true do
+        if failed then
+          return
+        end
+        local ready = true
+        for _, dep in ipairs(deps) do
+          if not doneSteps[dep] then
+            ready = false
+            break
+          end
+        end
+        if ready then
+          break
+        end
+        os.sleep(0.1)
+      end
+
+      Logger.printInfo(
+        string.format(
+          "Crafting '%s' x%d craft(s) as one batch..",
+          step.name,
+          step.craftsCount
+        )
+      )
+      local ok, err = pcall(
+        Crafting.processCraft,
+        step.recipe,
+        step.craftsCount,
+        function()
+          notify(function()
+            doneRuns = doneRuns + 1
+            if onStep then
+              onStep(doneRuns, totalRuns)
+            end
+          end)
+        end
+      )
+      if not ok then
+        failed = failed or err
+        return
+      end
+      doneSteps[step.name] = true
+      notify(onStepDone, step.name)
+    end
+  end
+
+  parallel.waitForAll(table.unpack(runners))
+  if failed then
+    error(failed, 0)
   end
 
   Logger.printSuccess(
