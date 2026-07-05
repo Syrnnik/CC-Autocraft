@@ -24,6 +24,10 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
     available[k] = v
   end
 
+  -- Items currently being expanded (the path from the root down to here). Used
+  -- to break reversible-recipe cycles like gold_ingot <-> gold_block.
+  local onStack = {}
+
   -- useStock: for sub-crafts, consume from virtual stock first, craft only
   -- the remainder. For the root item always craft the full requested amount.
   local function expand(name, count, useStock, explicitRecipe)
@@ -49,17 +53,32 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
       recipe = r
     end
 
+    local ingredients = Recipes.getRequiredItemsPlainList(recipe)
+
+    -- Cycle guard: if crafting `name` would need an ingredient that is already
+    -- being expanded higher up the tree, we'd recurse forever (e.g. an ingot
+    -- crafted from a block that is crafted from ingots). Treat `name` as a base
+    -- material instead: whatever stock can't cover is reported as missing for
+    -- `name`. So crafting an ingot reports missing blocks, and crafting a block
+    -- reports missing ingots -- the loop is cut at the first re-entry.
+    for _, ingredient in pairs(ingredients) do
+      if onStack[ingredient.name] then
+        return
+      end
+    end
+
     local craftsCount = math.ceil(stillNeeded / recipe.count)
     -- Surplus produced by this batch goes back into virtual stock.
     available[name] = (available[name] or 0)
       + craftsCount * recipe.count
       - stillNeeded
 
-    local ingredients = Recipes.getRequiredItemsPlainList(recipe)
+    onStack[name] = true
     for _, ingredient in pairs(ingredients) do
       local needed = ingredient.catalyst and 1 or ingredient.count * craftsCount
       expand(ingredient.name, needed, true)
     end
+    onStack[name] = nil
 
     table.insert(
       plan,
