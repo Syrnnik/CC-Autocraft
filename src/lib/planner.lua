@@ -88,25 +88,55 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
 
   expand(recipeName, neededCount, false, rootRecipe)
 
-  -- Merge duplicate steps: the same recipe can be reached through several
-  -- branches of the tree (e.g. two sub-crafts each needing glass). Combine them
-  -- into one step so the item is crafted all at once instead of in scattered
-  -- batches. The merged step keeps the position of its FIRST occurrence, which
-  -- still sits after all of its ingredients and before every consumer, so the
-  -- plan order (sub-crafts first, target last) stays valid.
-  local merged = {}
-  local indexByName = {}
+  -- Group duplicate steps: the same item can be reached through several
+  -- branches of the tree (e.g. many sub-crafts each needing printed_silicon),
+  -- so craft each item once as a single batch. Quantities are summed per item.
+  --
+  -- Ordering matters and a first-occurrence merge is NOT safe: when an item is
+  -- partly covered by stock, its early consumers draw it from stock and create
+  -- no craft step, so the item's first craft step lands AFTER those consumers.
+  -- Placing the merged batch there leaves a consumer before its producer, which
+  -- validatePlan then reports as a false shortage. Instead emit one step per
+  -- item in dependency order (every crafted ingredient before its consumers)
+  -- via a topological sort. Cycles can't occur -- the expand guard above breaks
+  -- reversible recipes -- but the in-progress mark guards against them anyway.
+  local aggregated = {}
+  local order = {}
   for _, step in ipairs(plan) do
-    local at = indexByName[step.name]
-    if at then
-      merged[at].craftsCount = merged[at].craftsCount + step.craftsCount
+    local a = aggregated[step.name]
+    if a then
+      a.craftsCount = a.craftsCount + step.craftsCount
     else
-      table.insert(merged, step)
-      indexByName[step.name] = #merged
+      aggregated[step.name] = {
+        name = step.name,
+        craftsCount = step.craftsCount,
+        recipe = step.recipe,
+      }
+      order[#order + 1] = step.name
     end
   end
 
-  return merged
+  local sorted = {}
+  local mark = {} -- nil = unseen, 1 = in progress, 2 = done
+  local function visit(name)
+    local a = aggregated[name]
+    if not a or mark[name] then
+      return
+    end
+    mark[name] = 1
+    for _, ingredient in ipairs(Recipes.getRequiredItemsPlainList(a.recipe)) do
+      if aggregated[ingredient.name] then
+        visit(ingredient.name)
+      end
+    end
+    mark[name] = 2
+    sorted[#sorted + 1] = a
+  end
+  for _, name in ipairs(order) do
+    visit(name)
+  end
+
+  return sorted
 end
 
 -- Simulates plan execution against current stock and collects all shortfalls.
