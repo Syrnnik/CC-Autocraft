@@ -57,6 +57,9 @@ local state = {
   labelEditTarget = nil,
   labelInput = "",
   labelInputMode = false,
+  labelsScanning = false, -- display-name scan in progress
+  labelsScanResult = nil, -- { rows, addedCount, missingCount } or { error }
+  labelsScanPage = 1,
   -- new_recipe tab state
   msg = nil,
   msgIsErr = false,
@@ -531,6 +534,8 @@ local function drawTabs()
         elseif tab.id == "labels" then
           state.tab = "labels"
           state.labelsPage = 1
+          state.labelsScanResult = nil
+          state.labelsScanning = false
           reloadLabels()
         elseif tab.id == "recipes" then
           state.tab = "recipes"
@@ -1589,9 +1594,162 @@ end
 
 -- ── Labels tab ──────────────────────────────────────────────
 
+-- Scans the Stock View for item display names (same job as the scan_names
+-- script, but in-process: the DisplayNames cache updates immediately, no
+-- reboot needed). Results land in state.labelsScanResult: rows with the
+-- newly added names first, then every recipe item that still has no
+-- display name at all.
+local function startLabelsScan()
+  state.labelsScanning = true
+  state.labelsScanResult = nil
+  state.labelInputMode = false
+  state.labelEditTarget = nil
+  pendingTask = function()
+    -- Ids we want named: crafted outputs + ingredients of every recipe.
+    local wanted = {}
+    for _, recipe in pairs(Recipes.getAllRecipes()) do
+      wanted[recipe.name] = true
+      if recipe.items then
+        for _, item in ipairs(recipe.items) do
+          wanted[item.name] = true
+        end
+      end
+    end
+
+    -- Copy, not reference: getAll returns the live cache that the scan
+    -- mutates, and we need the before-state to know what was added.
+    local before = {}
+    for id, dn in pairs(DisplayNames.getAll()) do
+      before[id] = dn
+    end
+
+    local ok, err = pcall(Stock.scanDisplayNames)
+    state.labelsScanning = false
+    if not ok then
+      state.labelsScanResult = { error = tostring(err) }
+      return
+    end
+
+    local after = DisplayNames.getAll()
+
+    local rows = {}
+    local addedCount = 0
+    for id, dn in pairs(after) do
+      if before[id] == nil then
+        addedCount = addedCount + 1
+        table.insert(rows, { name = id, displayName = dn, missing = false })
+      end
+    end
+    table.sort(rows, function(a, b)
+      return stripMod(a.name) < stripMod(b.name)
+    end)
+
+    local missingRows = {}
+    for id in pairs(wanted) do
+      if after[id] == nil then
+        table.insert(missingRows, { name = id, missing = true })
+      end
+    end
+    table.sort(missingRows, function(a, b)
+      return stripMod(a.name) < stripMod(b.name)
+    end)
+    for _, row in ipairs(missingRows) do
+      table.insert(rows, row)
+    end
+
+    state.labelsScanResult = {
+      rows = rows,
+      addedCount = addedCount,
+      missingCount = #missingRows,
+    }
+    state.labelsScanPage = 1
+  end
+end
+
+-- Scan results view: summary header + paginated ITEM/NAME table (added names
+-- first, unnamed recipe items in red), Back returns to the peripherals list.
+local function drawLabelsScanResult(res)
+  if res.error then
+    at(L, BODY_ROW + 1, truncate(res.error, W - L), colors.red, colors.black)
+    fill(H, colors.yellow)
+    mkBtn(W - #" Back " + 1, H, "Back", colors.black, colors.orange, function()
+      state.labelsScanResult = nil
+    end)
+    return
+  end
+
+  fill(BODY_ROW, colors.gray)
+  at(
+    L,
+    BODY_ROW,
+    truncate(
+      string.format(
+        "Added %d name(s), %d still unnamed",
+        res.addedCount,
+        res.missingCount
+      ),
+      W - L
+    ),
+    colors.white,
+    colors.gray
+  )
+
+  drawTable({
+    topY = BODY_ROW + 1,
+    items = res.rows,
+    page = state.labelsScanPage,
+    setPage = function(p)
+      state.labelsScanPage = p
+    end,
+    displayName = stripMod,
+    rightW = 30,
+    emptyMsg = "No new names; nothing unnamed",
+    headerName = "ITEM",
+    headerCount = "NAME",
+    alwaysShowPage = true,
+    countText = function(item)
+      return item.missing and "?" or (item.displayName or "")
+    end,
+    countColor = function(item)
+      return item.missing and colors.red or colors.lime
+    end,
+    rowFg = function(item)
+      return item.missing and colors.red or colors.white
+    end,
+    bottomBarRight = function()
+      mkBtn(
+        W - #" Back " + 1,
+        H,
+        "Back",
+        colors.black,
+        colors.orange,
+        function()
+          state.labelsScanResult = nil
+        end
+      )
+    end,
+  })
+end
+
 local function drawLabels()
   for y = BODY_ROW, H do
     fill(y, colors.black)
+  end
+
+  if state.labelsScanning then
+    at(
+      L,
+      BODY_ROW + 1,
+      "Scanning stock for names...",
+      colors.yellow,
+      colors.black
+    )
+    return
+  end
+
+  if state.labelsScanResult then
+    drawLabelsScanResult(state.labelsScanResult)
+    return
   end
 
   -- rightW=31 layout from xCount:
@@ -1611,7 +1769,27 @@ local function drawLabels()
     headerName = "Peripheral",
     headerCount = "Label",
     alwaysShowPage = true,
-    onRefresh = reloadLabels,
+    -- No Search here (the list isn't filtered by it); [Scan] harvests item
+    -- display names from the Stock View, [Refresh] re-reads peripherals.
+    bottomBarRight = function()
+      local xRefresh = W - #" Refresh " + 1
+      mkBtn(
+        xRefresh,
+        H,
+        "Refresh",
+        colors.black,
+        colors.orange,
+        reloadLabels
+      )
+      mkBtn(
+        xRefresh - #" Scan " - 1,
+        H,
+        "Scan",
+        colors.black,
+        colors.orange,
+        startLabelsScan
+      )
+    end,
     countText = function(_)
       return ""
     end,
