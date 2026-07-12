@@ -431,53 +431,87 @@ function Stock.getSlotUsage()
   return total, used, total - used
 end
 
--- Finds items spread across more slots than their counts require (partial
--- stacks that could be merged). Returns wastedTotal and rows
--- { name, slots, ideal, wasted } sorted by wasted desc.
-function Stock.analyzeSlotFragmentation()
-  local inv = slotInventory()
+-- Runs tasks in parallel batches, keeping coroutine counts sane when there
+-- are hundreds of lookups.
+local function runParallelBatched(tasks, batch)
+  batch = batch or 128
+  for i = 1, #tasks, batch do
+    local chunk = {}
+    for k = i, math.min(i + batch - 1, #tasks) do
+      chunk[#chunk + 1] = tasks[k]
+    end
+    Utils.runParallel(chunk)
+  end
+end
 
+-- Groups occupied slots by item identity: name + displayName. Same id with
+-- different display names (e.g. three conduit types sharing one item id) are
+-- different items and must not be merged; same display name with different
+-- hidden data (e.g. stored energy) stays in one group so it shows up in the
+-- report (the user can normalise such items so they stack).
+-- displayName needs getItemDetail, so details are fetched only for slots of
+-- items occupying 2+ slots -- single-slot items can't be fragmented.
+-- Returns map key -> { name, displayName, maxCount, slots = {{slot,count}} }.
+local function groupFragmentCandidates(inv)
   local byName = {}
   for slot, item in pairs(inv.list()) do
-    local e = byName[item.name]
-    if not e then
-      e = { slots = 0, total = 0, probeSlot = slot, maxSeen = 0 }
-      byName[item.name] = e
-    end
-    e.slots = e.slots + 1
-    e.total = e.total + item.count
-    if item.count > e.maxSeen then
-      e.maxSeen = item.count
-    end
+    byName[item.name] = byName[item.name] or {}
+    table.insert(byName[item.name], { slot = slot, count = item.count })
   end
 
-  -- Exact stack sizes, but only for multi-slot items (single-slot items
-  -- can't waste anything); one detail call each, all in parallel.
-  local stackSizes = {}
+  local groups = {}
   local tasks = {}
-  for name, e in pairs(byName) do
-    if e.slots > 1 then
-      tasks[#tasks + 1] = function()
-        local detail = inv.getItemDetail(e.probeSlot)
-        stackSizes[name] = (detail and detail.maxCount) or e.maxSeen
+  for name, slots in pairs(byName) do
+    if #slots > 1 then
+      for _, entry in ipairs(slots) do
+        tasks[#tasks + 1] = function()
+          local detail = inv.getItemDetail(entry.slot)
+          if detail then
+            local key = name .. "\0" .. (detail.displayName or "")
+            local group = groups[key]
+            if not group then
+              group = {
+                name = name,
+                displayName = detail.displayName,
+                maxCount = detail.maxCount or 64,
+                slots = {},
+              }
+              groups[key] = group
+            end
+            table.insert(group.slots, entry)
+          end
+        end
       end
     end
   end
-  Utils.runParallel(tasks)
+  runParallelBatched(tasks)
+
+  return groups
+end
+
+-- Finds items spread across more slots than their counts require (partial
+-- stacks that could be merged). Returns wastedTotal and rows
+-- { name, displayName, slots, ideal, wasted } sorted by wasted desc.
+function Stock.analyzeSlotFragmentation()
+  local inv = slotInventory()
+  local groups = groupFragmentCandidates(inv)
 
   local rows = {}
   local wastedTotal = 0
-  for name, e in pairs(byName) do
-    if e.slots > 1 then
-      local stackSize = math.max(1, stackSizes[name] or e.maxSeen)
-      local ideal = math.ceil(e.total / stackSize)
-      local wasted = e.slots - ideal
+  for _, group in pairs(groups) do
+    if #group.slots > 1 then
+      local total = sumCounts(group.slots)
+      local ideal = math.ceil(total / math.max(1, group.maxCount))
+      local wasted = #group.slots - ideal
       if wasted > 0 then
         wastedTotal = wastedTotal + wasted
-        table.insert(
-          rows,
-          { name = name, slots = e.slots, ideal = ideal, wasted = wasted }
-        )
+        table.insert(rows, {
+          name = group.name,
+          displayName = group.displayName,
+          slots = #group.slots,
+          ideal = ideal,
+          wasted = wasted,
+        })
       end
     end
   end
@@ -492,38 +526,18 @@ function Stock.analyzeSlotFragmentation()
 end
 
 -- Merges partial stacks so every item occupies its minimal slot count.
--- Items are compacted concurrently (one task per item; moves within an item
--- stay sequential because each move updates the same slots). Returns the
--- number of slots freed.
+-- Groups are compacted concurrently (moves within a group stay sequential
+-- because each move updates the same slots). Returns slots freed.
 function Stock.fixSlotFragmentation()
   local inv, invName = slotInventory()
-
-  local byName = {}
-  for slot, item in pairs(inv.list()) do
-    byName[item.name] = byName[item.name] or {}
-    table.insert(byName[item.name], { slot = slot, count = item.count })
-  end
-
-  local stackSizes = {}
-  local detailTasks = {}
-  for name, slots in pairs(byName) do
-    if #slots > 1 then
-      local probe = slots[1].slot
-      detailTasks[#detailTasks + 1] = function()
-        local detail = inv.getItemDetail(probe)
-        if detail and detail.maxCount then
-          stackSizes[name] = detail.maxCount
-        end
-      end
-    end
-  end
-  Utils.runParallel(detailTasks)
+  local groups = groupFragmentCandidates(inv)
 
   local freed = 0
   local mergeTasks = {}
-  for name, slots in pairs(byName) do
-    local maxCount = stackSizes[name]
-    if maxCount and #slots > math.ceil(sumCounts(slots) / maxCount) then
+  for _, group in pairs(groups) do
+    local maxCount = math.max(1, group.maxCount)
+    local slots = group.slots
+    if #slots > math.ceil(sumCounts(slots) / maxCount) then
       mergeTasks[#mergeTasks + 1] = function()
         -- Fullest stacks first as merge targets, smallest as sources.
         table.sort(slots, function(a, b)
@@ -545,24 +559,27 @@ function Stock.fixSlotFragmentation()
               dst.slot
             )
             if moved == 0 then
-              -- Slot changed under us; stop compacting this item.
-              break
-            end
-            dst.count = dst.count + moved
-            src.count = src.count - moved
-            if src.count <= 0 then
-              freed = freed + 1
+              -- Same display name but unstackable data (stored energy,
+              -- damage, ...) or the slot changed under us: skip this
+              -- source and try the next one.
               j = j - 1
-            end
-            if dst.count >= maxCount then
-              i = i + 1
+            else
+              dst.count = dst.count + moved
+              src.count = src.count - moved
+              if src.count <= 0 then
+                freed = freed + 1
+                j = j - 1
+              end
+              if dst.count >= maxCount then
+                i = i + 1
+              end
             end
           end
         end
       end
     end
   end
-  Utils.runParallel(mergeTasks)
+  runParallelBatched(mergeTasks)
 
   return freed
 end

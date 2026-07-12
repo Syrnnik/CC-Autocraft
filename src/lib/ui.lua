@@ -1648,7 +1648,9 @@ local function drawStockAnalysis(a)
     setPage = function(p)
       state.stockAnalysisPage = p
     end,
-    displayName = resolveDisplay,
+    displayName = function(name, item)
+      return (item and item.displayName) or resolveDisplay(name)
+    end,
     rightW = 12,
     emptyMsg = "No lost slots - storage is packed tight",
     headerCount = "SLOTS",
