@@ -29,6 +29,10 @@ local state = {
   stockPage = 1,
   stockScanning = false, -- storage slot scan in progress
   stockScanResult = nil, -- { total, used, free } or { error }
+  stockAnalyzing = false, -- fragmentation analysis in progress
+  stockAnalysis = nil, -- { wasted, rows, freed? } or { error }
+  stockAnalysisPage = 1,
+  stockFixing = false, -- slot compaction in progress
   type = "crafter", -- "crafter" | "machine"
   availableMachines = {}, -- populated by reloadMachines()
   -- machine recipe state
@@ -565,6 +569,9 @@ local function drawTabs()
           state.stockPage = 1
           state.stockScanResult = nil
           state.stockScanning = false
+          state.stockAnalysis = nil
+          state.stockAnalyzing = false
+          state.stockFixing = false
           reloadStock()
         elseif tab.id == "checklist" then
           state.tab = "checklist"
@@ -1573,6 +1580,104 @@ local function startStockScan()
   end
 end
 
+-- Analyzes stack fragmentation (items spread across more slots than needed)
+-- and shows the result on a dedicated screen.
+local function startStockAnalysis()
+  state.stockAnalyzing = true
+  state.stockAnalysis = nil
+  pendingTask = function()
+    local ok, wasted, rows = pcall(Stock.analyzeSlotFragmentation)
+    state.stockAnalyzing = false
+    if not ok then
+      state.stockAnalysis = { error = tostring(wasted) }
+      return
+    end
+    state.stockAnalysis = { wasted = wasted, rows = rows }
+    state.stockAnalysisPage = 1
+  end
+end
+
+-- Merges partial stacks, then re-analyzes and refreshes the usage numbers.
+local function startStockFix()
+  state.stockFixing = true
+  pendingTask = function()
+    local okFix, freed = pcall(Stock.fixSlotFragmentation)
+    local okAn, wasted, rows = pcall(Stock.analyzeSlotFragmentation)
+    state.stockFixing = false
+    if not okFix then
+      state.stockAnalysis = { error = tostring(freed) }
+      return
+    end
+    if okAn then
+      state.stockAnalysis = { wasted = wasted, rows = rows, freed = freed }
+      state.stockAnalysisPage = 1
+    else
+      state.stockAnalysis = { error = tostring(wasted) }
+    end
+    -- Keep the usage panel behind this screen up to date.
+    local okUsage, total, used, free = pcall(Stock.getSlotUsage)
+    if okUsage then
+      state.stockScanResult = { total = total, used = used, free = free }
+    end
+  end
+end
+
+-- Fragmentation analysis screen: lost-slot summary + paginated table of the
+-- offending items (SLOTS column shows actual > ideal).
+local function drawStockAnalysis(a)
+  if a.error then
+    at(L, BODY_ROW + 1, truncate(a.error, W - L), colors.red, colors.black)
+    fill(H, colors.yellow)
+    mkBtn(W - #" Back " + 1, H, "Back", colors.black, colors.orange, function()
+      state.stockAnalysis = nil
+    end)
+    return
+  end
+
+  fill(BODY_ROW, colors.gray)
+  local summary = string.format("Lost slots: %d", a.wasted)
+  if a.freed then
+    summary = summary .. string.format(" (freed %d)", a.freed)
+  end
+  at(L, BODY_ROW, truncate(summary, W - L), colors.white, colors.gray)
+
+  drawTable({
+    topY = BODY_ROW + 1,
+    items = a.rows,
+    page = state.stockAnalysisPage,
+    setPage = function(p)
+      state.stockAnalysisPage = p
+    end,
+    displayName = resolveDisplay,
+    rightW = 12,
+    emptyMsg = "No lost slots - storage is packed tight",
+    headerCount = "SLOTS",
+    alwaysShowPage = true,
+    countText = function(item)
+      return string.format("%d > %d", item.slots, item.ideal)
+    end,
+    countColor = function()
+      return colors.orange
+    end,
+    bottomBarRight = function()
+      local xBack = W - #" Back " + 1
+      mkBtn(xBack, H, "Back", colors.black, colors.orange, function()
+        state.stockAnalysis = nil
+      end)
+      if a.wasted > 0 then
+        mkBtn(
+          xBack - #" Fix slots " - 1,
+          H,
+          "Fix slots",
+          colors.black,
+          colors.cyan,
+          startStockFix
+        )
+      end
+    end,
+  })
+end
+
 -- Storage-usage panel: slot totals, fill percentage and a fill bar.
 local function drawStockScanResult(res)
   local function backButton()
@@ -1589,7 +1694,7 @@ local function drawStockScanResult(res)
   end
 
   fill(BODY_ROW, colors.gray)
-  at(L, BODY_ROW, "Storage usage", colors.white, colors.gray)
+  at(L, BODY_ROW, "Stock Usage", colors.white, colors.gray)
 
   local percent = res.total > 0 and (res.used / res.total * 100) or 0
   local pctColor = percent >= 90 and colors.red
@@ -1610,8 +1715,8 @@ local function drawStockScanResult(res)
   line(cur + 2, "Slots free:", tostring(res.free), colors.lime)
   line(cur + 4, "Fill level:", string.format("%.1f%%", percent), pctColor)
 
-  -- Fill bar across the screen width.
-  local barY = cur + 6
+  -- Fill bar right under the fill level, across the screen width.
+  local barY = cur + 5
   local barW = W - L
   local filledW = math.floor(barW * percent / 100 + 0.5)
   if filledW > 0 then
@@ -1621,6 +1726,8 @@ local function drawStockScanResult(res)
     at(L + filledW, barY, string.rep(" ", barW - filledW), colors.white, colors.gray)
   end
 
+  mkBtn(L, barY + 2, "Analyze", colors.black, colors.cyan, startStockAnalysis)
+
   backButton()
 end
 
@@ -1629,14 +1736,16 @@ local function drawStockList()
     fill(y, colors.black)
   end
 
-  if state.stockScanning then
-    at(
-      L,
-      BODY_ROW + 1,
-      "Scanning storage slots...",
-      colors.yellow,
-      colors.black
-    )
+  if state.stockScanning or state.stockAnalyzing or state.stockFixing then
+    local msg = state.stockFixing and "Fixing slots..."
+      or state.stockAnalyzing and "Analyzing slots..."
+      or "Scanning storage slots..."
+    at(L, BODY_ROW + 1, msg, colors.yellow, colors.black)
+    return
+  end
+
+  if state.stockAnalysis then
+    drawStockAnalysis(state.stockAnalysis)
     return
   end
 

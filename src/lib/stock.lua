@@ -389,22 +389,38 @@ function Stock.getTotals()
   return totals
 end
 
--- Returns slot usage of the storage: total, used and free slot counts.
--- size() gives the full slot count and list() the occupied slots, so empty
--- slots are accounted for without polling each slot individually.
--- Tries the Stock View first; custom view peripherals may not expose
--- size/list, so it falls back to Stock Out, which faces the same storage.
-function Stock.getSlotUsage()
-  local inv = getStockView()
+-- Returns a slot-addressable inventory facing the storage, plus its
+-- peripheral name (needed for self-directed pushItems). Tries the Stock View
+-- first; custom view peripherals may not expose size/list, so it falls back
+-- to Stock Out, which faces the same storage.
+local function slotInventory()
+  local name = Roles.getPort("stock_view")
+  local inv = name and peripheral.wrap(name) or nil
   if not (inv and inv.size and inv.list) then
-    local outName = Roles.getPort("stock_out")
-    inv = outName and peripheral.wrap(outName) or nil
+    name = Roles.getPort("stock_out")
+    inv = name and peripheral.wrap(name) or nil
   end
   if not (inv and inv.size and inv.list) then
     Logger.raiseError(
       "Neither Stock View nor Stock Out exposes slots (size/list)"
     )
   end
+  return inv, name
+end
+
+local function sumCounts(slots)
+  local total = 0
+  for _, s in ipairs(slots) do
+    total = total + s.count
+  end
+  return total
+end
+
+-- Returns slot usage of the storage: total, used and free slot counts.
+-- size() gives the full slot count and list() the occupied slots, so empty
+-- slots are accounted for without polling each slot individually.
+function Stock.getSlotUsage()
+  local inv = slotInventory()
 
   local total = inv.size()
   local used = 0
@@ -413,6 +429,142 @@ function Stock.getSlotUsage()
   end
 
   return total, used, total - used
+end
+
+-- Finds items spread across more slots than their counts require (partial
+-- stacks that could be merged). Returns wastedTotal and rows
+-- { name, slots, ideal, wasted } sorted by wasted desc.
+function Stock.analyzeSlotFragmentation()
+  local inv = slotInventory()
+
+  local byName = {}
+  for slot, item in pairs(inv.list()) do
+    local e = byName[item.name]
+    if not e then
+      e = { slots = 0, total = 0, probeSlot = slot, maxSeen = 0 }
+      byName[item.name] = e
+    end
+    e.slots = e.slots + 1
+    e.total = e.total + item.count
+    if item.count > e.maxSeen then
+      e.maxSeen = item.count
+    end
+  end
+
+  -- Exact stack sizes, but only for multi-slot items (single-slot items
+  -- can't waste anything); one detail call each, all in parallel.
+  local stackSizes = {}
+  local tasks = {}
+  for name, e in pairs(byName) do
+    if e.slots > 1 then
+      tasks[#tasks + 1] = function()
+        local detail = inv.getItemDetail(e.probeSlot)
+        stackSizes[name] = (detail and detail.maxCount) or e.maxSeen
+      end
+    end
+  end
+  Utils.runParallel(tasks)
+
+  local rows = {}
+  local wastedTotal = 0
+  for name, e in pairs(byName) do
+    if e.slots > 1 then
+      local stackSize = math.max(1, stackSizes[name] or e.maxSeen)
+      local ideal = math.ceil(e.total / stackSize)
+      local wasted = e.slots - ideal
+      if wasted > 0 then
+        wastedTotal = wastedTotal + wasted
+        table.insert(
+          rows,
+          { name = name, slots = e.slots, ideal = ideal, wasted = wasted }
+        )
+      end
+    end
+  end
+  table.sort(rows, function(a, b)
+    if a.wasted ~= b.wasted then
+      return a.wasted > b.wasted
+    end
+    return a.name < b.name
+  end)
+
+  return wastedTotal, rows
+end
+
+-- Merges partial stacks so every item occupies its minimal slot count.
+-- Items are compacted concurrently (one task per item; moves within an item
+-- stay sequential because each move updates the same slots). Returns the
+-- number of slots freed.
+function Stock.fixSlotFragmentation()
+  local inv, invName = slotInventory()
+
+  local byName = {}
+  for slot, item in pairs(inv.list()) do
+    byName[item.name] = byName[item.name] or {}
+    table.insert(byName[item.name], { slot = slot, count = item.count })
+  end
+
+  local stackSizes = {}
+  local detailTasks = {}
+  for name, slots in pairs(byName) do
+    if #slots > 1 then
+      local probe = slots[1].slot
+      detailTasks[#detailTasks + 1] = function()
+        local detail = inv.getItemDetail(probe)
+        if detail and detail.maxCount then
+          stackSizes[name] = detail.maxCount
+        end
+      end
+    end
+  end
+  Utils.runParallel(detailTasks)
+
+  local freed = 0
+  local mergeTasks = {}
+  for name, slots in pairs(byName) do
+    local maxCount = stackSizes[name]
+    if maxCount and #slots > math.ceil(sumCounts(slots) / maxCount) then
+      mergeTasks[#mergeTasks + 1] = function()
+        -- Fullest stacks first as merge targets, smallest as sources.
+        table.sort(slots, function(a, b)
+          return a.count > b.count
+        end)
+        local i, j = 1, #slots
+        while i < j do
+          local dst, src = slots[i], slots[j]
+          local space = maxCount - dst.count
+          if space <= 0 then
+            i = i + 1
+          elseif src.count <= 0 then
+            j = j - 1
+          else
+            local moved = inv.pushItems(
+              invName,
+              src.slot,
+              math.min(space, src.count),
+              dst.slot
+            )
+            if moved == 0 then
+              -- Slot changed under us; stop compacting this item.
+              break
+            end
+            dst.count = dst.count + moved
+            src.count = src.count - moved
+            if src.count <= 0 then
+              freed = freed + 1
+              j = j - 1
+            end
+            if dst.count >= maxCount then
+              i = i + 1
+            end
+          end
+        end
+      end
+    end
+  end
+  Utils.runParallel(mergeTasks)
+
+  return freed
 end
 
 -- Like getTotals(), but damageable items are counted by remaining uses
