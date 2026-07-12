@@ -389,21 +389,26 @@ function Stock.getTotals()
   return totals
 end
 
--- Returns slot usage of the stock view inventory: total, used and free slot
--- counts. size() gives the full slot count and list() the occupied slots, so
--- empty slots are accounted for without polling each slot individually.
+-- Returns slot usage of the storage: total, used and free slot counts.
+-- size() gives the full slot count and list() the occupied slots, so empty
+-- slots are accounted for without polling each slot individually.
+-- Tries the Stock View first; custom view peripherals may not expose
+-- size/list, so it falls back to Stock Out, which faces the same storage.
 function Stock.getSlotUsage()
-  local view = getStockView()
-  if not view then
-    Logger.raiseError("Role 'Stock View' is not configured")
+  local inv = getStockView()
+  if not (inv and inv.size and inv.list) then
+    local outName = Roles.getPort("stock_out")
+    inv = outName and peripheral.wrap(outName) or nil
   end
-  if not view.size or not view.list then
-    Logger.raiseError("Stock View does not expose slots (size/list)")
+  if not (inv and inv.size and inv.list) then
+    Logger.raiseError(
+      "Neither Stock View nor Stock Out exposes slots (size/list)"
+    )
   end
 
-  local total = view.size()
+  local total = inv.size()
   local used = 0
-  for _ in pairs(view.list()) do
+  for _ in pairs(inv.list()) do
     used = used + 1
   end
 
