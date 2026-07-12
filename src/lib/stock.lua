@@ -389,6 +389,27 @@ function Stock.getTotals()
   return totals
 end
 
+-- Returns slot usage of the stock view inventory: total, used and free slot
+-- counts. size() gives the full slot count and list() the occupied slots, so
+-- empty slots are accounted for without polling each slot individually.
+function Stock.getSlotUsage()
+  local view = getStockView()
+  if not view then
+    Logger.raiseError("Role 'Stock View' is not configured")
+  end
+  if not view.size or not view.list then
+    Logger.raiseError("Stock View does not expose slots (size/list)")
+  end
+
+  local total = view.size()
+  local used = 0
+  for _ in pairs(view.list()) do
+    used = used + 1
+  end
+
+  return total, used, total - used
+end
+
 -- Like getTotals(), but damageable items are counted by remaining uses
 -- (maxDamage - damage) instead of item count.
 -- Also returns maxDmg map { [name] = maxDamage } for damageable items,

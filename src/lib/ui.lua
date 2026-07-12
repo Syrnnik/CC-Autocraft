@@ -27,6 +27,8 @@ local state = {
   editTargetName = nil, -- item name of the recipe being edited (for display)
   stockItems = {}, -- { name, count } sorted by name
   stockPage = 1,
+  stockScanning = false, -- storage slot scan in progress
+  stockScanResult = nil, -- { total, used, free } or { error }
   type = "crafter", -- "crafter" | "machine"
   availableMachines = {}, -- populated by reloadMachines()
   -- machine recipe state
@@ -282,26 +284,39 @@ local function drawTable(opts)
     if state.searchQuery ~= "" or state.searchMode then
       local queryStart = afterNav + searchBtnW + 1
       local refreshW = opts.onRefresh and (#" Refresh " + 1) or 0
+      local scanW = opts.onScan and (#" Scan " + 1) or 0
       local display = state.searchQuery .. (state.searchMode and "_" or "")
-      if queryStart <= W - refreshW then
+      if queryStart <= W - refreshW - scanW then
         at(
           queryStart,
           paginationY,
-          truncate(display, W - refreshW - queryStart),
+          truncate(display, W - refreshW - scanW - queryStart),
           colors.black,
           colors.yellow
         )
       end
     end
 
+    local xAfterRefresh = W + 1
     if opts.onRefresh then
+      xAfterRefresh = W - #" Refresh " + 1
       mkBtn(
-        W - #" Refresh " + 1,
+        xAfterRefresh,
         paginationY,
         "Refresh",
         colors.black,
         colors.orange,
         opts.onRefresh
+      )
+    end
+    if opts.onScan then
+      mkBtn(
+        xAfterRefresh - #" Scan " - 1,
+        paginationY,
+        "Scan",
+        colors.black,
+        colors.orange,
+        opts.onScan
       )
     end
   end
@@ -548,6 +563,8 @@ local function drawTabs()
         elseif tab.id == "stock" then
           state.tab = "stock"
           state.stockPage = 1
+          state.stockScanResult = nil
+          state.stockScanning = false
           reloadStock()
         elseif tab.id == "checklist" then
           state.tab = "checklist"
@@ -1540,9 +1557,92 @@ end
 
 -- ── Stock tab ───────────────────────────────────────────────
 
+-- Walks the storage slots (via size + list, so empty slots are counted too)
+-- and stores totals in state.stockScanResult.
+local function startStockScan()
+  state.stockScanning = true
+  state.stockScanResult = nil
+  pendingTask = function()
+    local ok, total, used, free = pcall(Stock.getSlotUsage)
+    state.stockScanning = false
+    if not ok then
+      state.stockScanResult = { error = tostring(total) }
+      return
+    end
+    state.stockScanResult = { total = total, used = used, free = free }
+  end
+end
+
+-- Storage-usage panel: slot totals, fill percentage and a fill bar.
+local function drawStockScanResult(res)
+  local function backButton()
+    fill(H, colors.yellow)
+    mkBtn(W - #" Back " + 1, H, "Back", colors.black, colors.orange, function()
+      state.stockScanResult = nil
+    end)
+  end
+
+  if res.error then
+    at(L, BODY_ROW + 1, truncate(res.error, W - L), colors.red, colors.black)
+    backButton()
+    return
+  end
+
+  fill(BODY_ROW, colors.gray)
+  at(L, BODY_ROW, "Storage usage", colors.white, colors.gray)
+
+  local percent = res.total > 0 and (res.used / res.total * 100) or 0
+  local pctColor = percent >= 90 and colors.red
+    or percent >= 70 and colors.orange
+    or colors.lime
+
+  -- Right-align the numbers in one column after the longest label.
+  local xValue = L + #"Slots total: " + 1
+  local numW = #tostring(res.total)
+  local function line(y, label, value, fg)
+    at(L, y, label, colors.lightGray, colors.black)
+    at(xValue, y, string.format("%" .. numW .. "s", value), fg, colors.black)
+  end
+
+  local cur = BODY_ROW + 2
+  line(cur, "Slots total:", tostring(res.total), colors.white)
+  line(cur + 1, "Slots used:", tostring(res.used), colors.yellow)
+  line(cur + 2, "Slots free:", tostring(res.free), colors.lime)
+  line(cur + 4, "Fill level:", string.format("%.1f%%", percent), pctColor)
+
+  -- Fill bar across the screen width.
+  local barY = cur + 6
+  local barW = W - L
+  local filledW = math.floor(barW * percent / 100 + 0.5)
+  if filledW > 0 then
+    at(L, barY, string.rep(" ", filledW), colors.white, pctColor)
+  end
+  if filledW < barW then
+    at(L + filledW, barY, string.rep(" ", barW - filledW), colors.white, colors.gray)
+  end
+
+  backButton()
+end
+
 local function drawStockList()
   for y = BODY_ROW, H do
     fill(y, colors.black)
+  end
+
+  if state.stockScanning then
+    at(
+      L,
+      BODY_ROW + 1,
+      "Scanning storage slots...",
+      colors.yellow,
+      colors.black
+    )
+    return
+  end
+
+  if state.stockScanResult then
+    drawStockScanResult(state.stockScanResult)
+    return
   end
 
   local modFiltered = drawModTabs(BODY_ROW, state.stockItems, {
@@ -1589,6 +1689,7 @@ local function drawStockList()
     rightW = 9,
     emptyMsg = "Stock is empty",
     onRefresh = reloadStock,
+    onScan = startStockScan,
   })
 end
 
