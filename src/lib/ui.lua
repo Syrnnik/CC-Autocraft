@@ -537,11 +537,13 @@ local function drawTabs()
       x2 = x2,
       y = TABS_ROW,
       fn = function()
-        -- Keep the search box when returning to RECIPES from a craft, so
-        -- crafting several similar recipes in a row doesn't mean retyping the
-        -- same query each time. Every other tab switch starts with a clear
-        -- search (e.g. so a STOCK query doesn't leak into RECIPES).
-        local keepSearch = tab.id == "recipes" and state.tab == "craft"
+        -- Keep the search box when returning to RECIPES from a craft or from
+        -- the +RECIPE tab, so working through several similar recipes doesn't
+        -- mean retyping the same query each time. Every other tab switch
+        -- starts with a clear search (e.g. so a STOCK query doesn't leak
+        -- into RECIPES).
+        local keepSearch = tab.id == "recipes"
+          and (state.tab == "craft" or state.tab == "new_recipe")
         if not keepSearch then
           state.searchQuery = ""
           state.searchMode = false
