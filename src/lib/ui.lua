@@ -108,7 +108,9 @@ local function matchesQuery(text, query)
   local pos = 1
   for token in query:lower():gmatch("%S+") do
     local _, e = text:find(token, pos, true)
-    if not e then return false end
+    if not e then
+      return false
+    end
     pos = e + 1
   end
   return true
@@ -1130,8 +1132,7 @@ local function drawNewRecipe()
         recipeItems, craftedItem = a, b
       end
       local name = craftedItem.name
-      local exists =
-        Recipes.findExisting(name, craftedItem.displayName) ~= nil
+      local exists = Recipes.findExisting(name, craftedItem.displayName) ~= nil
       state.pendingRecipe = {
         items = recipeItems,
         craftedItem = craftedItem,
@@ -1183,57 +1184,50 @@ local function drawNewRecipe()
       savePendingRecipe
     )
   elseif state.editTarget then
-    mkBtn(
-      afterClearX,
-      cur,
-      "Save",
-      colors.white,
-      colors.gray,
-      function()
-        if state.type == "machine" then
-          if not state.resultProcessor then
-            state.msg = "Select result machine"
-            state.msgIsErr = true
-            return
-          end
-          local itemProcessors = {}
-          for _, item in ipairs(state.machineItems) do
-            itemProcessors[item.name] = item.processor
-          end
-          local ok, err = pcall(
-            Recipes.updateRecipeProcessor,
-            state.editTarget,
-            state.type,
-            nil,
-            state.resultProcessor,
-            itemProcessors
-          )
-          if ok then
-            state.msg = "Saved: " .. (state.editTargetName or state.editTarget)
-            state.msgIsErr = false
-          else
-            state.msg = tostring(err)
-            state.msgIsErr = true
-          end
+    mkBtn(afterClearX, cur, "Save", colors.white, colors.gray, function()
+      if state.type == "machine" then
+        if not state.resultProcessor then
+          state.msg = "Select result machine"
+          state.msgIsErr = true
+          return
+        end
+        local itemProcessors = {}
+        for _, item in ipairs(state.machineItems) do
+          itemProcessors[item.name] = item.processor
+        end
+        local ok, err = pcall(
+          Recipes.updateRecipeProcessor,
+          state.editTarget,
+          state.type,
+          nil,
+          state.resultProcessor,
+          itemProcessors
+        )
+        if ok then
+          state.msg = "Saved: " .. (state.editTargetName or state.editTarget)
+          state.msgIsErr = false
         else
-          local ok, err = pcall(
-            Recipes.updateRecipeProcessor,
-            state.editTarget,
-            state.type,
-            Roles.get("crafter"),
-            nil,
-            nil
-          )
-          if ok then
-            state.msg = "Saved: " .. (state.editTargetName or state.editTarget)
-            state.msgIsErr = false
-          else
-            state.msg = tostring(err)
-            state.msgIsErr = true
-          end
+          state.msg = tostring(err)
+          state.msgIsErr = true
+        end
+      else
+        local ok, err = pcall(
+          Recipes.updateRecipeProcessor,
+          state.editTarget,
+          state.type,
+          Roles.get("crafter"),
+          nil,
+          nil
+        )
+        if ok then
+          state.msg = "Saved: " .. (state.editTargetName or state.editTarget)
+          state.msgIsErr = false
+        else
+          state.msg = tostring(err)
+          state.msgIsErr = true
         end
       end
-    )
+    end)
   end
 
   local hasResult = state.msg ~= nil or state.pendingRecipe ~= nil
@@ -1292,6 +1286,34 @@ local function prepareCraftState(name, count)
   state.craftPlan = nil
 end
 
+-- Builds the on-screen copy of a craft plan. Each entry tracks `remaining`
+-- (items still to craft) so the tree counts down as crafts complete; `perCraft`
+-- is the recipe yield used to convert completed crafts into items.
+local function makePlanView(plan)
+  local copy = {}
+  for i, step in ipairs(plan) do
+    copy[i] = {
+      name = step.name,
+      perCraft = step.recipe.count,
+      remaining = step.craftsCount * step.recipe.count,
+    }
+  end
+  return copy
+end
+
+-- Decrements the remaining-items counter of a plan step after a craft run.
+local function updatePlanStepProgress(stepName, craftsDone)
+  if not state.craftPlan then
+    return
+  end
+  for _, s in ipairs(state.craftPlan) do
+    if s.name == stepName then
+      s.remaining = math.max(0, s.remaining - craftsDone * s.perCraft)
+      return
+    end
+  end
+end
+
 -- Removes a completed step from the on-screen plan. Plan execution is
 -- pipelined, so steps can finish out of order -- remove by name, not the head.
 local function removePlanStep(stepName)
@@ -1316,27 +1338,32 @@ end
 local function makeCraftTask(name, count, key)
   local rootRecipe = key and Recipes.getRecipeByKey(key) or nil
   return function(redraw)
-    local ok, err = pcall(Crafting.craftItem, name, count, function(i, total)
-      state.craftProgress = math.floor(i / total * 100)
-      if redraw then
-        redraw()
-      end
-    end, function(plan)
-      local copy = {}
-      for i, v in ipairs(plan) do
-        copy[i] = v
-      end
-      state.craftPlan = copy
-      state.craftPlanning = false
-      if redraw then
-        redraw()
-      end
-    end, function(stepName)
-      removePlanStep(stepName)
-      if redraw then
-        redraw()
-      end
-    end, rootRecipe)
+    local ok, err = pcall(
+      Crafting.craftItem,
+      name,
+      count,
+      function(i, total, stepName, craftsDone)
+        state.craftProgress = math.floor(i / total * 100)
+        updatePlanStepProgress(stepName, craftsDone)
+        if redraw then
+          redraw()
+        end
+      end,
+      function(plan)
+        state.craftPlan = makePlanView(plan)
+        state.craftPlanning = false
+        if redraw then
+          redraw()
+        end
+      end,
+      function(stepName)
+        removePlanStep(stepName)
+        if redraw then
+          redraw()
+        end
+      end,
+      rootRecipe
+    )
     if ok then
       state.craftPlan = nil
       state.craftMsgIsDone = true
@@ -1366,18 +1393,15 @@ local function makeCraftQueueTask(queue)
         Crafting.craftItem,
         item.name,
         item.count,
-        function(step, total)
+        function(step, total, stepName, craftsDone)
           state.craftProgress = math.floor(step / total * 100)
+          updatePlanStepProgress(stepName, craftsDone)
           if redraw then
             redraw()
           end
         end,
         function(plan)
-          local copy = {}
-          for j, v in ipairs(plan) do
-            copy[j] = v
-          end
-          state.craftPlan = copy
+          state.craftPlan = makePlanView(plan)
           state.craftPlanning = false
           if redraw then
             redraw()
@@ -1534,7 +1558,7 @@ local function drawCraftScreen()
         local label = "- "
           .. resolveDisplay(step.name)
           .. " x"
-          .. (step.craftsCount * step.recipe.count)
+          .. step.remaining
         at(L, row, truncate(label, W - L), colors.lightGray, colors.black)
       end
     end
@@ -1725,7 +1749,13 @@ local function drawStockScanResult(res)
     at(L, barY, string.rep(" ", filledW), colors.white, pctColor)
   end
   if filledW < barW then
-    at(L + filledW, barY, string.rep(" ", barW - filledW), colors.white, colors.gray)
+    at(
+      L + filledW,
+      barY,
+      string.rep(" ", barW - filledW),
+      colors.white,
+      colors.gray
+    )
   end
 
   mkBtn(L, barY + 2, "Analyze", colors.black, colors.cyan, startStockAnalysis)
@@ -1985,14 +2015,7 @@ local function drawLabels()
     -- display names from the Stock View, [Refresh] re-reads peripherals.
     bottomBarRight = function()
       local xRefresh = W - #" Refresh " + 1
-      mkBtn(
-        xRefresh,
-        H,
-        "Refresh",
-        colors.black,
-        colors.orange,
-        reloadLabels
-      )
+      mkBtn(xRefresh, H, "Refresh", colors.black, colors.orange, reloadLabels)
       mkBtn(
         xRefresh - #" Scan " - 1,
         H,

@@ -344,7 +344,8 @@ end
 -- wait for the result, pull it to stock, then clear all machines.
 -- batchSize: how many recipe cycles to run in one call.
 --   Items are pushed to processors all at once; results are pulled one by one.
--- onEach(): called after each individual result is collected (for progress tracking).
+-- onEach(craftsDone): called after each individual result is collected (for
+--   progress tracking); craftsDone is the number of recipe cycles completed.
 function Crafting.craftMachine(recipe, batchSize, onEach)
   batchSize = batchSize or 1
   local stockIn = Utils.wrapPeripheral(stockInName())
@@ -483,7 +484,7 @@ function Crafting.runMachineCycle(
         cyclesDone = cyclesDone + newCycles
         for _ = 1, newCycles do
           if onEach then
-            onEach()
+            onEach(1)
           end
         end
         found = true
@@ -613,7 +614,8 @@ function Crafting.processNewCraft()
 end
 
 -- batchSize: craft batchSize recipe iterations in a single crafter call.
--- onEach(): called after each individual machine cycle, or once after a crafter batch.
+-- onEach(craftsDone): called after each individual machine cycle (craftsDone=1),
+--   or once after each crafter chunk (craftsDone=chunk size).
 function Crafting.processCraft(recipe, batchSize, onEach)
   batchSize = batchSize or 1
   local recipeItem = recipe.name
@@ -666,7 +668,7 @@ function Crafting.processCraft(recipe, batchSize, onEach)
           Crafting.getCraftedItem(stockOutName(), false, catalystSlots)
           done = done + chunk
           if onEach then
-            onEach()
+            onEach(chunk)
           end
         end
       end)
@@ -703,7 +705,9 @@ end
 -- Execution is pipelined: independent steps run concurrently (the crafter
 -- keeps working while a machine smelts); a step waits only for the earlier
 -- steps that produce its ingredients.
--- onStep(current, total): called after each individual craft run (per machine cycle or crafter batch).
+-- onStep(current, total, stepName, craftsDone): called after each individual
+--   craft run (per machine cycle or crafter chunk). stepName is the plan step
+--   that progressed; craftsDone is how many recipe cycles it just completed.
 -- onPlan(plan): called once after the plan is built, before execution starts.
 -- onStepDone(stepName): called after each full plan step completes. Steps can
 --   finish out of plan order.
@@ -782,9 +786,7 @@ function Crafting.craftItem(
   for i, step in ipairs(plan) do
     -- Earlier plan steps that produce one of this step's ingredients.
     local deps = {}
-    for _, ingredient in
-      ipairs(Recipes.getRequiredItemsPlainList(step.recipe))
-    do
+    for _, ingredient in ipairs(Recipes.getRequiredItemsPlainList(step.recipe)) do
       for j = 1, i - 1 do
         if plan[j].name == ingredient.name then
           deps[#deps + 1] = ingredient.name
@@ -823,11 +825,11 @@ function Crafting.craftItem(
         Crafting.processCraft,
         step.recipe,
         step.craftsCount,
-        function()
+        function(craftsDone)
           notify(function()
             doneRuns = doneRuns + 1
             if onStep then
-              onStep(doneRuns, totalRuns)
+              onStep(doneRuns, totalRuns, step.name, craftsDone or 1)
             end
           end)
         end
