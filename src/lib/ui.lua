@@ -344,7 +344,10 @@ local function drawModTabs(y, items, opts)
 
   local modTab = opts.getTab()
 
-  -- Reset to "all" if the selected mod no longer exists in items
+  -- Fall back to "all" when the selected mod isn't in items -- but only for
+  -- this frame. The stored selection is kept, so a transiently empty or
+  -- shrunken list (e.g. mid-reload) can't permanently kick the user's mod
+  -- tab back to All.
   if modTab ~= "all" then
     local found = false
     for _, mod in ipairs(mods) do
@@ -355,8 +358,6 @@ local function drawModTabs(y, items, opts)
     end
     if not found then
       modTab = "all"
-      opts.setTab("all")
-      opts.setOffset(0)
     end
   end
 
@@ -537,13 +538,14 @@ local function drawTabs()
       x2 = x2,
       y = TABS_ROW,
       fn = function()
-        -- Keep the search box when returning to RECIPES from a craft or from
-        -- the +RECIPE tab, so working through several similar recipes doesn't
-        -- mean retyping the same query each time. Every other tab switch
-        -- starts with a clear search (e.g. so a STOCK query doesn't leak
-        -- into RECIPES).
-        local keepSearch = tab.id == "recipes"
-          and (state.tab == "craft" or state.tab == "new_recipe")
+        -- The search survives switches within the recipes family (RECIPES,
+        -- the craft screen, +RECIPE) in BOTH directions -- clearing only on
+        -- the way back proved useless, the query was already wiped when
+        -- leaving RECIPES. Any other switch clears it (a STOCK query must
+        -- not leak into RECIPES).
+        local searchFamily =
+          { recipes = true, craft = true, new_recipe = true }
+        local keepSearch = searchFamily[tab.id] and searchFamily[state.tab]
         if not keepSearch then
           state.searchQuery = ""
           state.searchMode = false
