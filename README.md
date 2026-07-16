@@ -66,7 +66,7 @@ mv crafter.lua startup.lua
 | **+RECIPE** | Record a new recipe from the crafting interface |
 | **CHECKLIST** | Material checklist from a Create schematic clipboard — shows status per item, craft missing items, move available items to the output chest |
 | **LABELS** | Assign friendly names to peripherals (e.g. `depot_3` → `lava_input`) |
-| **SETUP** | Assign system roles to peripherals (stock, crafter, monitor, etc.) |
+| **SETUP** | Two sub-tabs: **System Roles** (assign roles to peripherals) and **Settings** (edit config values in-game) |
 
 ## Components
 
@@ -82,30 +82,41 @@ mv crafter.lua startup.lua
 | `get_recipe.lua` | Computer | CLI: show details of a single recipe |
 | `delete_recipe.lua` | Computer | CLI: delete a recipe by name |
 
+## Updates
+
+Both `monitor.lua` and `crafter.lua` check for updates on startup (latest commit on the release branch via the GitHub API). When an update is available:
+
+- **Computer** — the monitor shows **Skip** / **Install** buttons (the terminal keys `0`/`1` also work).
+- **Turtle** — the terminal asks `0 = Skip, 1 = Install`.
+
+**Install** downloads the latest files in place and reboots; settings, recipes, labels, and roles live in `data/` and are never touched by updates. If the entry point was renamed to `startup.lua`, the update refreshes that copy too — no manual renaming needed. A failed check (no internet, GitHub down) never blocks startup.
+
 ## Configuration
 
-### config.lua — edit once after install
+### SETUP > Settings — edit config in-game
+
+Config values are edited from the monitor UI under **SETUP > Settings** and stored in `data/settings.json`, so they survive updates. Booleans are picked from a true/false list; numbers are typed on the computer's keyboard (Enter saves, Escape cancels).
 
 Only one value usually needs changing:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CRAFTER_NETWORK_ID` | `5` | Rednet ID of the crafting turtle (run `id` on the turtle) |
+| `Crafter Net ID` | `5` | Rednet ID of the crafting turtle (run `id` on the turtle) |
 
 Everything else is optional:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `IS_DEBUG_MODE` | `true` | Verbose logging — turn off for normal use |
-| `MONITOR_TEXT_SCALE` | `1.0` | Text scale for the monitor |
-| `CRAFT_TIMEOUT` | `30` | Seconds to wait for the turtle before giving up |
-| `MACHINE_CRAFT_TIMEOUT` | `30` | Seconds to wait for a machine recipe to complete |
-| `CLEAR_CRAFTER_BEFORE_CRAFT` | `false` | Pull leftover items from the turtle before each craft |
-| `PATTERN_SIZE` | `3` | Recipe grid size (3 for a standard 3×3 grid) |
+| `Debug Mode` | `true` | Verbose logging — turn off for normal use |
+| `Text Scale` | `1.0` | Text scale for the monitor |
+| `Craft Timeout` | `30` | Seconds to wait for the turtle before giving up |
+| `Machine Timeout` | `30` | Seconds to wait for a machine recipe to complete |
+| `Clear Crafter` | `false` | Pull leftover items from the turtle before each craft |
+| `Pattern Size` | `3` | Recipe grid size (3 for a standard 3×3 grid) |
 
-### SETUP tab — configure peripherals in-game
+### SETUP > System Roles — configure peripherals in-game
 
-Peripheral assignments are configured from the monitor UI under the **SETUP** tab — no file editing required. Assign each system role to a peripheral by choosing from your labeled peripherals or entering a name manually.
+Peripheral assignments are configured from the monitor UI under **SETUP > System Roles** — no file editing required. Assign each system role to a peripheral by choosing from your labeled peripherals or entering a name manually.
 
 | Role | Description |
 |------|-------------|

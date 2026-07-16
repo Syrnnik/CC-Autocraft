@@ -49,8 +49,7 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
       available[name] = 0
     end
 
-    local recipe = explicitRecipe
-      or Recipes.getFromSnapshot(allRecipes, name)
+    local recipe = explicitRecipe or Recipes.getFromSnapshot(allRecipes, name)
     if not recipe then
       -- Base material: no recipe, must come from stock.
       return

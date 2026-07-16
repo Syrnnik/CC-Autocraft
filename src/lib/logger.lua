@@ -1,8 +1,6 @@
 local Config = require("lib.config")
 local Utils = require("lib.utils")
 
-local isDebugMode = Config.IS_DEBUG_MODE
-
 local textColorDebug = Config.TEXT_COLOR_DEBUG
 local textColorInfo = Config.TEXT_COLOR_INFO
 local textColorWarn = Config.TEXT_COLOR_WARN
@@ -63,7 +61,8 @@ function Logger.printWarning(...)
 end
 
 function Logger.printDebug(...)
-  if isDebugMode then
+  -- Read at call time so SETUP > Settings changes apply without restart.
+  if Config.IS_DEBUG_MODE then
     _print(textColorDebug, nil, ...)
   end
 end

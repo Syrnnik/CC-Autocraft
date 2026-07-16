@@ -12,13 +12,6 @@ local function toLabelOrPort(port)
   return Labels.get(port) or port
 end
 
-local patternSize = Config.PATTERN_SIZE
-local crafterRowSize = Config.CRAFTER_ROW_SIZE
-local patternsDiff = math.abs(patternSize - crafterRowSize)
-
-local interfaceRowSize = Config.NEW_RECIPE_INTERFACE_ROW_SIZE
-local patternStart = Config.PATTERN_START
-
 local recipesPath = Config.RECIPES_PATH
 
 local Recipes = {}
@@ -43,8 +36,9 @@ function Recipes.countRecipeSlot(
 end
 
 function Recipes.countCrafterSlot(slot)
-  local row = math.floor((slot - 1) / patternSize)
+  local row = math.floor((slot - 1) / Config.PATTERN_SIZE)
   -- Offset by patterns diff in each row
+  local patternsDiff = math.abs(Config.PATTERN_SIZE - Config.CRAFTER_ROW_SIZE)
   return slot + row * patternsDiff + 1
 end
 
@@ -54,10 +48,10 @@ function Recipes.getNewRecipeItems(interfaceName)
   local interface = peripheral.wrap(interfaceName)
 
   -- Iterate rows in interface
-  for row = 0, patternSize - 1 do
-    local offset = interfaceRowSize * row
-    local rowStart = patternStart + offset
-    local rowEnd = rowStart + patternSize - 1
+  for row = 0, Config.PATTERN_SIZE - 1 do
+    local offset = Config.NEW_RECIPE_INTERFACE_ROW_SIZE * row
+    local rowStart = Config.PATTERN_START + offset
+    local rowEnd = rowStart + Config.PATTERN_SIZE - 1
 
     -- Iterate slots in row
     for slot = rowStart, rowEnd do
@@ -74,9 +68,9 @@ function Recipes.getNewRecipeItems(interfaceName)
         local recipeSlot = Recipes.countRecipeSlot(
           slot,
           row,
-          patternStart - 1,
-          interfaceRowSize,
-          patternSize
+          Config.PATTERN_START - 1,
+          Config.NEW_RECIPE_INTERFACE_ROW_SIZE,
+          Config.PATTERN_SIZE
         )
         local crafterSlot = Recipes.countCrafterSlot(recipeSlot)
         table.insert(recipeItems, {

@@ -34,14 +34,7 @@ local function stockOutInv()
   return inv
 end
 
-local crafterNetworkID = Config.CRAFTER_NETWORK_ID
 local networkEvents = Config.NETWORK_EVENTS
-local craftTimeout = Config.CRAFT_TIMEOUT
-local clearCrafterBeforeCraft = Config.CLEAR_CRAFTER_BEFORE_CRAFT
-
-local patternSize = Config.PATTERN_SIZE
-local patternStart = Config.PATTERN_START
-local newRecipeInterfaceRowSize = Config.NEW_RECIPE_INTERFACE_ROW_SIZE
 
 local Crafting = {}
 
@@ -84,9 +77,10 @@ end
 
 local function patternSlots()
   local slots = {}
-  for row = 0, patternSize - 1 do
-    local rowStart = patternStart + newRecipeInterfaceRowSize * row
-    for slot = rowStart, rowStart + patternSize - 1 do
+  for row = 0, Config.PATTERN_SIZE - 1 do
+    local rowStart = Config.PATTERN_START
+      + Config.NEW_RECIPE_INTERFACE_ROW_SIZE * row
+    for slot = rowStart, rowStart + Config.PATTERN_SIZE - 1 do
       table.insert(slots, slot)
     end
   end
@@ -94,8 +88,9 @@ local function patternSlots()
 end
 
 function Crafting.getSlotToPutItem()
-  return math.ceil(newRecipeInterfaceRowSize / 2)
-    + newRecipeInterfaceRowSize * math.floor(patternSize / 2)
+  return math.ceil(Config.NEW_RECIPE_INTERFACE_ROW_SIZE / 2)
+    + Config.NEW_RECIPE_INTERFACE_ROW_SIZE
+      * math.floor(Config.PATTERN_SIZE / 2)
 end
 
 function Crafting.pushItemsToCrafter(items, fromInterfaceName)
@@ -219,7 +214,7 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot, skipSlots)
 end
 
 function Crafting.craft(items, fromInterfaceName)
-  if clearCrafterBeforeCraft then
+  if Config.CLEAR_CRAFTER_BEFORE_CRAFT then
     local fromInterface = Utils.wrapPeripheral(fromInterfaceName)
     local tasks = {}
     for slot = 1, 16 do
@@ -233,10 +228,10 @@ function Crafting.craft(items, fromInterfaceName)
 
   Crafting.pushItemsToCrafter(items, fromInterfaceName)
 
-  Network.sendEvent(crafterNetworkID, networkEvents.CRAFT)
+  Network.sendEvent(Config.CRAFTER_NETWORK_ID, networkEvents.CRAFT)
 
   Logger.printDebug("Waiting for crafter..")
-  local senderID, msg = Network.receiveEvent(craftTimeout)
+  local senderID, msg = Network.receiveEvent(Config.CRAFT_TIMEOUT)
 
   if not senderID then
     Logger.printError("Crafter did not respond (timeout or offline)")

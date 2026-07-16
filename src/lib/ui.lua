@@ -54,10 +54,15 @@ local state = {
   searchQuery = "",
   searchMode = false,
   -- setup tab state
+  setupTab = "roles", -- "roles" | "settings"
+  setupPage = 1,
   setupPickerRole = nil,
   setupPickerOffset = 0, -- horizontal scroll for the setup peripheral picker
   setupCustomMode = false,
   setupCustomInput = "",
+  settingEditKey = nil, -- Config key being edited via keyboard
+  settingInput = "",
+  settingBoolKey = nil, -- boolean Config key with an open true/false picker
   -- labels tab state
   labelsPage = 1,
   labelItems = {}, -- { name (peripheral), label }
@@ -553,8 +558,11 @@ local function drawTabs()
         state.labelInputMode = false
         state.setupPickerRole = nil
         state.setupCustomMode = false
+        state.settingEditKey = nil
+        state.settingBoolKey = nil
         if tab.id == "setup" then
           state.tab = "setup"
+          state.setupPage = 1
           reloadLabels()
         elseif tab.id == "labels" then
           state.tab = "labels"
@@ -2114,20 +2122,41 @@ local ROLE_NEEDS_INVENTORY = {
   stock_out = true,
 }
 
-local function drawSetup()
-  for y = BODY_ROW, H do
-    fill(y, colors.black)
+-- Applies a setting value: persists it via Config.set and re-applies side
+-- effects that normally only happen at startup (monitor text scale).
+local function applySetting(key, value)
+  if key == "MONITOR_TEXT_SCALE" then
+    value = math.max(0.5, math.min(5, value))
   end
+  local ok = pcall(Config.set, key, value)
+  if ok and key == "MONITOR_TEXT_SCALE" then
+    pcall(mon.setTextScale, value)
+    W, H = mon.getSize()
+  end
+end
 
-  fill(BODY_ROW, colors.gray)
-  at(L, BODY_ROW, "System Roles", colors.white, colors.gray)
+-- Commits the keyboard input of the setting being edited. An input that is
+-- not a number keeps the editor open (Escape cancels).
+local function commitSettingInput()
+  local key = state.settingEditKey
+  if not key then
+    return
+  end
+  local value = tonumber(state.settingInput)
+  if not value then
+    return
+  end
+  applySetting(key, value)
+  state.settingEditKey = nil
+end
 
+-- Builds the System Roles blocks. Every block is { height, expanded,
+-- draw = function(y) } so drawSetup can pack whole blocks onto pages.
+local function buildRoleBlocks()
   -- Layout: role name (right-aligned) | [Set] | value
   -- Longest role name = "Recipe Iface" = 12 chars → xSet = L + 14
   local xSet = L + 14
   local xValue = xSet + #" Set " + 1 -- value starts after [Set] button + gap
-
-  local cur = BODY_ROW + 1
 
   -- Ports offered by the picker: every labeled peripheral (incl. stale ones,
   -- so a temporarily disconnected port can still be assigned).
@@ -2182,141 +2211,373 @@ local function drawSetup()
     end
   end
 
+  local blocks = {}
   for _, role in ipairs(Roles.LIST) do
-    if cur > H - 1 then
-      break
-    end
-    fill(cur, colors.black)
-
-    -- Role display name (right-aligned before [Set])
-    local disp = Roles.DISPLAY[role]
-    at(math.max(L, xSet - #disp - 1), cur, disp, colors.lightGray, colors.black)
-
     local values = Roles.getList(role)
     local isMulti = Roles.MULTI[role] == true
     local pickerOpen = state.setupPickerRole == role
     local rolePorts = ROLE_NEEDS_INVENTORY[role] and invPickerPorts
       or pickerPorts
-
-    -- First assigned value sits on the role row; the rest stack below in
-    -- the same column.
-    if #values > 0 then
-      drawValue(cur, values[1])
-    else
-      at(xValue, cur, "-", colors.lightGray, colors.black)
-    end
-
     local captRole = role
-    -- [Set] toggles the picker; green while open as a "tap to finish" hint.
-    mkBtn(
-      xSet,
-      cur,
-      "Set",
-      colors.black,
-      pickerOpen and colors.green or colors.yellow,
-      function()
-        if state.setupPickerRole == captRole then
-          state.setupPickerRole = nil
-        else
-          state.setupPickerRole = captRole
-          state.setupPickerOffset = 0
-        end
-        state.setupCustomMode = false
-        state.setupCustomInput = ""
-      end
-    )
 
-    cur = cur + 1
-
-    for i = 2, #values do
-      if cur > H - 1 then
-        break
-      end
-      fill(cur, colors.black)
-      drawValue(cur, values[i])
-      cur = cur + 1
+    local height = 1 + math.max(0, #values - 1)
+    if pickerOpen then
+      height = height + (state.setupCustomMode and 1 or 2)
     end
 
-    -- Inline picker
-    if pickerOpen then
-      if state.setupCustomMode then
-        if cur <= H - 1 then
+    table.insert(blocks, {
+      height = height,
+      expanded = pickerOpen,
+      draw = function(y)
+        local cur = y
+        if cur > H - 1 then
+          return
+        end
+        fill(cur, colors.black)
+
+        -- Role display name (right-aligned before [Set])
+        local disp = Roles.DISPLAY[captRole]
+        at(
+          math.max(L, xSet - #disp - 1),
+          cur,
+          disp,
+          colors.lightGray,
+          colors.black
+        )
+
+        -- First assigned value sits on the role row; the rest stack below
+        -- in the same column.
+        if #values > 0 then
+          drawValue(cur, values[1])
+        else
+          at(xValue, cur, "-", colors.lightGray, colors.black)
+        end
+
+        -- [Set] toggles the picker; green while open as a "tap to finish"
+        -- hint.
+        mkBtn(
+          xSet,
+          cur,
+          "Set",
+          colors.black,
+          pickerOpen and colors.green or colors.yellow,
+          function()
+            if state.setupPickerRole == captRole then
+              state.setupPickerRole = nil
+            else
+              state.setupPickerRole = captRole
+              state.setupPickerOffset = 0
+            end
+            state.setupCustomMode = false
+            state.setupCustomInput = ""
+          end
+        )
+
+        cur = cur + 1
+
+        for i = 2, #values do
+          if cur > H - 1 then
+            break
+          end
           fill(cur, colors.black)
+          drawValue(cur, values[i])
+          cur = cur + 1
+        end
+
+        -- Inline picker
+        if pickerOpen then
+          if state.setupCustomMode then
+            if cur <= H - 1 then
+              fill(cur, colors.black)
+              at(
+                L + 2,
+                cur,
+                truncate(state.setupCustomInput .. "_", W - L - 4),
+                colors.yellow,
+                colors.black
+              )
+            end
+          else
+            -- Single paginated row of labeled peripherals (same pager as
+            -- the +RECIPE machine picker). Tapping toggles for multi roles
+            -- and selects-and-closes for single ones.
+            if cur <= H - 1 then
+              fill(cur, colors.black)
+
+              local selectedSet = {}
+              for _, port in ipairs(rolePorts) do
+                local key = Labels.get(port) or port
+                for _, v in ipairs(values) do
+                  if v == key or v == port then
+                    selectedSet[port] = true
+                    break
+                  end
+                end
+              end
+
+              drawMachinePager(cur, rolePorts, selectedSet, function()
+                return state.setupPickerOffset
+              end, function(o)
+                state.setupPickerOffset = o
+              end, function(port)
+                local label = Labels.get(port)
+                -- A stored entry may reference this peripheral by label OR
+                -- by raw port (legacy configs). Toggle whichever form is
+                -- stored, otherwise a tap would add the same peripheral
+                -- twice.
+                local value = nil
+                for _, v in ipairs(values) do
+                  if v == port or (label and v == label) then
+                    value = v
+                    break
+                  end
+                end
+                value = value or label or port
+                if isMulti then
+                  pcall(Roles.toggle, captRole, value)
+                else
+                  pcall(Roles.set, captRole, value)
+                  state.setupPickerRole = nil
+                end
+              end, "No labeled peripherals")
+              cur = cur + 1
+            end
+
+            -- Custom / Clear row
+            if cur <= H - 1 then
+              fill(cur, colors.black)
+              local x = L + 2
+              mkBtn(x, cur, "Custom", colors.black, colors.gray, function()
+                state.setupCustomMode = true
+                state.setupCustomInput = ""
+              end)
+              x = x + #" Custom " + 1
+              if #values > 0 then
+                mkBtn(x, cur, "Clear", colors.black, colors.red, function()
+                  pcall(Roles.clear, captRole)
+                  if not isMulti then
+                    state.setupPickerRole = nil
+                  end
+                end)
+              end
+            end
+          end
+        end
+      end,
+    })
+  end
+  return blocks
+end
+
+-- Builds the Settings blocks: one row per editable Config value, styled
+-- like the System Roles rows. Numbers are typed on the keyboard, booleans
+-- open a true/false picker row below.
+local function buildSettingBlocks()
+  -- Longest label = "Machine Timeout" = 15 chars → xSet = L + 16
+  local xSet = L + 16
+  local xValue = xSet + #" Set " + 1
+
+  local blocks = {}
+  for _, setting in ipairs(Config.EDITABLE) do
+    local captKey = setting.key
+    local captType = setting.type
+    local boolOpen = state.settingBoolKey == captKey
+    local editing = state.settingEditKey == captKey
+
+    table.insert(blocks, {
+      height = boolOpen and 2 or 1,
+      expanded = boolOpen or editing,
+      draw = function(y)
+        if y > H - 1 then
+          return
+        end
+        fill(y, colors.black)
+        at(
+          math.max(L, xSet - #setting.label - 1),
+          y,
+          setting.label,
+          colors.lightGray,
+          colors.black
+        )
+
+        -- [Set]: booleans toggle the picker row; numbers open keyboard
+        -- input (green Set or Enter commits, Escape cancels).
+        mkBtn(
+          xSet,
+          y,
+          "Set",
+          colors.black,
+          (boolOpen or editing) and colors.green or colors.yellow,
+          function()
+            if captType == "boolean" then
+              state.settingBoolKey = (state.settingBoolKey == captKey) and nil
+                or captKey
+              state.settingEditKey = nil
+            else
+              if state.settingEditKey == captKey then
+                commitSettingInput()
+              else
+                state.settingEditKey = captKey
+                state.settingInput = tostring(Config[captKey])
+              end
+              state.settingBoolKey = nil
+            end
+          end
+        )
+
+        if editing then
           at(
-            L + 2,
-            cur,
-            truncate(state.setupCustomInput .. "_", W - L - 4),
+            xValue,
+            y,
+            truncate(state.settingInput .. "_", W - xValue),
             colors.yellow,
             colors.black
           )
-          cur = cur + 1
-        end
-      else
-        -- Single paginated row of labeled peripherals (same pager as the
-        -- +RECIPE machine picker). Tapping toggles for multi roles and
-        -- selects-and-closes for single ones.
-        if cur <= H - 1 then
-          fill(cur, colors.black)
-
-          local selectedSet = {}
-          for _, port in ipairs(rolePorts) do
-            local key = Labels.get(port) or port
-            for _, v in ipairs(values) do
-              if v == key or v == port then
-                selectedSet[port] = true
-                break
-              end
-            end
+        else
+          local value = Config[captKey]
+          local fg = colors.yellow
+          if captType == "boolean" then
+            fg = value and colors.lime or colors.red
           end
-
-          drawMachinePager(cur, rolePorts, selectedSet, function()
-            return state.setupPickerOffset
-          end, function(o)
-            state.setupPickerOffset = o
-          end, function(port)
-            local label = Labels.get(port)
-            -- A stored entry may reference this peripheral by label OR by
-            -- raw port (legacy configs). Toggle whichever form is stored,
-            -- otherwise a tap would add the same peripheral twice.
-            local value = nil
-            for _, v in ipairs(values) do
-              if v == port or (label and v == label) then
-                value = v
-                break
-              end
-            end
-            value = value or label or port
-            if isMulti then
-              pcall(Roles.toggle, captRole, value)
-            else
-              pcall(Roles.set, captRole, value)
-              state.setupPickerRole = nil
-            end
-          end, "No labeled peripherals")
-          cur = cur + 1
+          at(xValue, y, truncate(tostring(value), W - xValue), fg, colors.black)
         end
 
-        -- Custom / Clear row
-        if cur <= H - 1 then
-          fill(cur, colors.black)
+        -- true / false picker row
+        if boolOpen and y + 1 <= H - 1 then
+          local yOpt = y + 1
+          fill(yOpt, colors.black)
           local x = L + 2
-          mkBtn(x, cur, "Custom", colors.black, colors.gray, function()
-            state.setupCustomMode = true
-            state.setupCustomInput = ""
-          end)
-          x = x + #" Custom " + 1
-          if #values > 0 then
-            mkBtn(x, cur, "Clear", colors.black, colors.red, function()
-              pcall(Roles.clear, captRole)
-              if not isMulti then
-                state.setupPickerRole = nil
+          for _, option in ipairs({ true, false }) do
+            local captOption = option
+            mkBtn(
+              x,
+              yOpt,
+              tostring(option),
+              colors.black,
+              Config[captKey] == option and colors.cyan or colors.gray,
+              function()
+                applySetting(captKey, captOption)
+                state.settingBoolKey = nil
               end
-            end)
+            )
+            x = x + #tostring(option) + 3
           end
-          cur = cur + 1
         end
+      end,
+    })
+  end
+  return blocks
+end
+
+local function drawSetup()
+  for y = BODY_ROW, H do
+    fill(y, colors.black)
+  end
+
+  fill(BODY_ROW, colors.gray)
+  at(
+    L,
+    BODY_ROW,
+    state.setupTab == "settings" and "Settings" or "System Roles",
+    colors.white,
+    colors.gray
+  )
+
+  local blocks = state.setupTab == "settings" and buildSettingBlocks()
+    or buildRoleBlocks()
+
+  -- Pack whole blocks onto pages of the available content height. A block
+  -- taller than one page is clamped (its draw fn guards every row).
+  local contentTop = BODY_ROW + 1
+  local avail = (H - 1) - contentTop + 1
+  local pages = {}
+  local pageBlocks, used = {}, 0
+  for _, block in ipairs(blocks) do
+    local h = math.min(block.height, avail)
+    if used + h > avail and #pageBlocks > 0 then
+      table.insert(pages, pageBlocks)
+      pageBlocks, used = {}, 0
+    end
+    table.insert(pageBlocks, block)
+    used = used + h
+  end
+  if #pageBlocks > 0 then
+    table.insert(pages, pageBlocks)
+  end
+
+  local totalPages = math.max(1, #pages)
+  local page = math.min(state.setupPage, totalPages)
+  -- An open picker/editor must stay visible: opening it can grow its block
+  -- past the page break, so snap to whichever page it landed on.
+  for pi, blocksOnPage in ipairs(pages) do
+    for _, block in ipairs(blocksOnPage) do
+      if block.expanded then
+        page = pi
       end
     end
+  end
+  state.setupPage = page
+
+  local y = contentTop
+  for _, block in ipairs(pages[page] or {}) do
+    block.draw(y)
+    y = y + block.height
+  end
+
+  -- Bottom bar: pagination (left) + sub-tabs (right)
+  fill(H, colors.yellow)
+  local pageText = page .. " / " .. totalPages
+  at(L, H, pageText, colors.black, colors.yellow)
+  if totalPages > 1 then
+    local btnX = L + #pageText + 1
+    mkBtn(btnX, H, "^", colors.black, colors.orange, function()
+      if page > 1 then
+        state.setupPage = page - 1
+      end
+    end)
+    mkBtn(btnX + 5, H, "v", colors.black, colors.orange, function()
+      if page < totalPages then
+        state.setupPage = page + 1
+      end
+    end)
+  end
+
+  local subTabs = {
+    { id = "roles", label = " System Roles " },
+    { id = "settings", label = " Settings " },
+  }
+  local tabsW = 0
+  for i, tab in ipairs(subTabs) do
+    tabsW = tabsW + #tab.label + (i > 1 and 1 or 0)
+  end
+  local x = W - tabsW + 1
+  for _, tab in ipairs(subTabs) do
+    local active = state.setupTab == tab.id
+    local captId = tab.id
+    at(
+      x,
+      H,
+      tab.label,
+      active and colors.black or colors.gray,
+      active and colors.orange or colors.yellow
+    )
+    table.insert(buttons, {
+      x1 = x,
+      x2 = x + #tab.label - 1,
+      y = H,
+      fn = function()
+        if state.setupTab ~= captId then
+          state.setupTab = captId
+          state.setupPage = 1
+          state.setupPickerRole = nil
+          state.setupCustomMode = false
+          state.setupCustomInput = ""
+          state.settingEditKey = nil
+          state.settingBoolKey = nil
+        end
+      end,
+    })
+    x = x + #tab.label + 1
   end
 end
 
@@ -2852,6 +3113,25 @@ function UI.run(monitorName)
           drawScreen()
         elseif key == keys.escape then
           state.setupCustomMode = false
+          drawScreen()
+        end
+      end
+    elseif state.settingEditKey then
+      if evType == "char" then
+        state.settingInput = state.settingInput .. ev[2]
+        drawScreen()
+      elseif evType == "key" then
+        local key = ev[2]
+        if key == keys.backspace then
+          if #state.settingInput > 0 then
+            state.settingInput = state.settingInput:sub(1, -2)
+          end
+          drawScreen()
+        elseif key == keys.enter then
+          commitSettingInput()
+          drawScreen()
+        elseif key == keys.escape then
+          state.settingEditKey = nil
           drawScreen()
         end
       end
