@@ -2146,6 +2146,17 @@ local function drawSetup()
       end
     end
   end
+  -- The pager renders labels, so sort by label (port as tiebreaker), same
+  -- as the +RECIPE machine picker.
+  local function byLabel(a, b)
+    local la, lb = machineLabel(a), machineLabel(b)
+    if la ~= lb then
+      return la < lb
+    end
+    return a < b
+  end
+  table.sort(pickerPorts, byLabel)
+  table.sort(invPickerPorts, byLabel)
 
   -- Draws one assigned value as "label (port)" at xValue on row y.
   local function drawValue(y, value)
