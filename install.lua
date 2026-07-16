@@ -18,6 +18,7 @@ local COMPUTER_FILES = {
   "lib/display_names.lua",
   "lib/labels.lua",
   "lib/logger.lua",
+  "lib/multi_inv.lua",
   "lib/network.lua",
   "lib/planner.lua",
   "lib/recipes.lua",

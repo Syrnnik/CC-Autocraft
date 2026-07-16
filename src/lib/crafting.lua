@@ -1,6 +1,7 @@
 local Config = require("lib.config")
 local Labels = require("lib.labels")
 local Logger = require("lib.logger")
+local MultiInv = require("lib.multi_inv")
 local Network = require("lib.network")
 local Planner = require("lib.planner")
 local Recipes = require("lib.recipes")
@@ -16,11 +17,21 @@ end
 local function interfaceName()
   return Roles.getPort("recipe_interface")
 end
-local function stockInName()
-  return Roles.getPort("stock_in")
+-- Stock In/Out may span several peripherals; both come back as one
+-- (possibly virtual) inventory. Raises when the role is not configured.
+local function stockInInv()
+  local inv = MultiInv.forRole("stock_in")
+  if not inv then
+    Logger.raiseError("Role 'Stock In' is not configured")
+  end
+  return inv
 end
-local function stockOutName()
-  return Roles.getPort("stock_out")
+local function stockOutInv()
+  local inv = MultiInv.forRole("stock_out")
+  if not inv then
+    Logger.raiseError("Role 'Stock Out' is not configured")
+  end
+  return inv
 end
 
 local crafterNetworkID = Config.CRAFTER_NETWORK_ID
@@ -120,7 +131,7 @@ function Crafting.pushItemsToCrafter(items, fromInterfaceName)
       string.format(
         "Failed to push '%s' from '%s' (%d) to '%s' (%d)",
         failedItem.name,
-        fromInterfaceName,
+        Utils.portLabel(fromInterfaceName),
         failedItem.slot,
         getCrafter(),
         failedItem.crafterSlot
@@ -132,7 +143,9 @@ end
 function Crafting.returnRecipeItems(items, toInterfaceName)
   local toInterface = Utils.wrapPeripheral(toInterfaceName)
 
-  Logger.printWarning(string.format("Returning items to '%s'", toInterfaceName))
+  Logger.printWarning(
+    string.format("Returning items to '%s'", Utils.portLabel(toInterfaceName))
+  )
 
   local failedItem = nil
   local tasks = {}
@@ -153,7 +166,7 @@ function Crafting.returnRecipeItems(items, toInterfaceName)
         failedItem.name,
         getCrafter(),
         failedItem.crafterSlot,
-        toInterfaceName
+        Utils.portLabel(toInterfaceName)
       )
     )
   end
@@ -164,7 +177,10 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot, skipSlots)
   local toInterface = Utils.wrapPeripheral(toInterfaceName)
 
   Logger.printInfo(
-    string.format("Getting crafted item from '%s'", toInterfaceName)
+    string.format(
+      "Getting crafted item from '%s'",
+      Utils.portLabel(toInterfaceName)
+    )
   )
 
   if not isSpecificSlot then
@@ -190,7 +206,7 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot, skipSlots)
       string.format(
         "Failed to pull items from '%s' to '%s'",
         getCrafter(),
-        toInterfaceName
+        Utils.portLabel(toInterfaceName)
       )
     )
   end
@@ -348,8 +364,8 @@ end
 --   progress tracking); craftsDone is the number of recipe cycles completed.
 function Crafting.craftMachine(recipe, batchSize, onEach)
   batchSize = batchSize or 1
-  local stockIn = Utils.wrapPeripheral(stockInName())
-  local stockOut = Utils.wrapPeripheral(stockOutName())
+  local stockIn = stockInInv()
+  local stockOut = stockOutInv()
 
   -- Resolve labels → port names once (Utils.wrapPeripheral will error if not found)
   local resultPort = Labels.resolvePort(recipe.resultProcessor)
@@ -538,7 +554,7 @@ end
 -- Push recipe pattern slots (and crafted-item slot) from the recipe interface
 -- back to stock. Only touches the slots actually used for recipe input.
 function Crafting.clearRecipeInterface()
-  local stock = Utils.wrapPeripheral(stockOutName())
+  local stock = stockOutInv()
   local tasks = {}
   for _, slot in ipairs(patternSlots()) do
     local s = slot
@@ -648,6 +664,9 @@ function Crafting.processCraft(recipe, batchSize, onEach)
     -- chunk lists stock and claims slots from it.
     lockStock()
     local okBatch, errBatch = pcall(function()
+      local stockIn = stockInInv()
+      local stockOut = stockOutInv()
+
       local catalysts = Stock.getCatalystItemsForRecipe(recipe)
       local catalystSlots = {}
       for _, cat in ipairs(catalysts) do
@@ -655,7 +674,7 @@ function Crafting.processCraft(recipe, batchSize, onEach)
       end
 
       if #catalysts > 0 then
-        Crafting.pushItemsToCrafter(catalysts, stockInName())
+        Crafting.pushItemsToCrafter(catalysts, stockIn)
       end
 
       local maxBatch = Stock.getMaxBatchForRecipe(recipe)
@@ -664,8 +683,8 @@ function Crafting.processCraft(recipe, batchSize, onEach)
         while done < batchSize do
           local chunk = math.min(maxBatch, batchSize - done)
           local stockItems = Stock.getItemsForRecipe(recipe, chunk)
-          Crafting.craft(stockItems, stockInName())
-          Crafting.getCraftedItem(stockOutName(), false, catalystSlots)
+          Crafting.craft(stockItems, stockIn)
+          Crafting.getCraftedItem(stockOut, false, catalystSlots)
           done = done + chunk
           if onEach then
             onEach(chunk)
@@ -675,7 +694,6 @@ function Crafting.processCraft(recipe, batchSize, onEach)
 
       -- Always return catalysts to stock after the batch (or on error)
       if #catalysts > 0 then
-        local stockOut = Utils.wrapPeripheral(stockOutName())
         local tasks = {}
         for _, cat in ipairs(catalysts) do
           local slot = cat.crafterSlot

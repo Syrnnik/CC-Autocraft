@@ -55,6 +55,7 @@ local state = {
   searchMode = false,
   -- setup tab state
   setupPickerRole = nil,
+  setupPickerOffset = 0, -- horizontal scroll for the setup peripheral picker
   setupCustomMode = false,
   setupCustomInput = "",
   -- labels tab state
@@ -543,8 +544,7 @@ local function drawTabs()
         -- the way back proved useless, the query was already wiped when
         -- leaving RECIPES. Any other switch clears it (a STOCK query must
         -- not leak into RECIPES).
-        local searchFamily =
-          { recipes = true, craft = true, new_recipe = true }
+        local searchFamily = { recipes = true, craft = true, new_recipe = true }
         local keepSearch = searchFamily[tab.id] and searchFamily[state.tab]
         if not keepSearch then
           state.searchQuery = ""
@@ -735,20 +735,30 @@ end
 -- pagination (< / > arrows appear when the buttons overflow the width), the
 -- same scrolling scheme used by the mod sub-tabs.
 --   machines : list of peripheral names (rendered via machineLabel)
---   selected : currently selected machine name (or nil)
+--   selected : currently selected machine name, or a set
+--              { [name] = true } when several can be selected at once
 --   getOffset/setOffset : accessors for this picker's scroll offset
 --   onSelect : callback(name) when a button is tapped
+--   emptyMsg : optional text when `machines` is empty
 local function drawMachinePager(
   y,
   machines,
   selected,
   getOffset,
   setOffset,
-  onSelect
+  onSelect,
+  emptyMsg
 )
   if #machines == 0 then
-    at(L, y, "No machines found", colors.gray, colors.black)
+    at(L, y, emptyMsg or "No machines found", colors.gray, colors.black)
     return
+  end
+
+  local function isSelected(name)
+    if type(selected) == "table" then
+      return selected[name] == true
+    end
+    return name == selected
   end
 
   -- mkBtn renders " label " → hit width is #label + 2.
@@ -839,7 +849,7 @@ local function drawMachinePager(
       y,
       labels[i],
       colors.black,
-      capt == selected and colors.cyan or colors.gray,
+      isSelected(capt) and colors.cyan or colors.gray,
       function()
         onSelect(capt)
       end
@@ -2097,6 +2107,13 @@ end
 
 -- ── Setup tab ───────────────────────────────────────────────
 
+-- Roles whose picker offers only item inventories. Stock View is exempt:
+-- it may be a custom non-inventory peripheral (stock()/getStockItemDetail).
+local ROLE_NEEDS_INVENTORY = {
+  stock_in = true,
+  stock_out = true,
+}
+
 local function drawSetup()
   for y = BODY_ROW, H do
     fill(y, colors.black)
@@ -2105,13 +2122,54 @@ local function drawSetup()
   fill(BODY_ROW, colors.gray)
   at(L, BODY_ROW, "System Roles", colors.white, colors.gray)
 
-  local rolesData = Roles.getAll()
   -- Layout: role name (right-aligned) | [Set] | value
   -- Longest role name = "Recipe Iface" = 12 chars → xSet = L + 14
   local xSet = L + 14
   local xValue = xSet + #" Set " + 1 -- value starts after [Set] button + gap
 
   local cur = BODY_ROW + 1
+
+  -- Ports offered by the picker: every labeled peripheral (incl. stale ones,
+  -- so a temporarily disconnected port can still be assigned).
+  -- invPickerPorts keeps only inventories (for ROLE_NEEDS_INVENTORY roles);
+  -- stale ports can't be type-checked while absent, so they stay listed.
+  local pickerPorts = {}
+  local invPickerPorts = {}
+  for _, item in ipairs(state.labelItems) do
+    if item.label ~= "" then
+      table.insert(pickerPorts, item.name)
+      if
+        item.connected == false
+        or peripheral.hasType(item.name, "inventory")
+      then
+        table.insert(invPickerPorts, item.name)
+      end
+    end
+  end
+
+  -- Draws one assigned value as "label (port)" at xValue on row y.
+  local function drawValue(y, value)
+    local port = Labels.findPort(value)
+      or (peripheral.isPresent(value) and value)
+    local maxW = W - xValue - 1
+    if port and port ~= value then
+      local portStr = "(" .. stripMod(port) .. ")"
+      local lblTrunc = truncate(value, maxW - #portStr - 1)
+      at(xValue, y, lblTrunc, colors.yellow, colors.black)
+      local xPort = xValue + #lblTrunc + 1
+      if xPort <= W - 1 then
+        at(
+          xPort,
+          y,
+          truncate(portStr, W - xPort),
+          colors.lightGray,
+          colors.black
+        )
+      end
+    else
+      at(xValue, y, truncate(value, maxW), colors.yellow, colors.black)
+    end
+  end
 
   for _, role in ipairs(Roles.LIST) do
     if cur > H - 1 then
@@ -2123,45 +2181,53 @@ local function drawSetup()
     local disp = Roles.DISPLAY[role]
     at(math.max(L, xSet - #disp - 1), cur, disp, colors.lightGray, colors.black)
 
-    -- Current assignment (after [Set])
-    local explicit = rolesData[role]
-    if explicit then
-      -- explicit may be a label (new) or port (old). Resolve port for display.
-      local port = Labels.findPort(explicit)
-        or (peripheral.isPresent(explicit) and explicit)
-      local maxW = W - xValue - 1
-      if port then
-        local portStr = "(" .. stripMod(port) .. ")"
-        local lblTrunc = truncate(explicit, maxW - #portStr - 1)
-        at(xValue, cur, lblTrunc, colors.yellow, colors.black)
-        local xPort = xValue + #lblTrunc + 1
-        if xPort <= W - 1 then
-          at(
-            xPort,
-            cur,
-            truncate(portStr, W - xPort),
-            colors.lightGray,
-            colors.black
-          )
-        end
-      else
-        at(xValue, cur, truncate(explicit, maxW), colors.yellow, colors.black)
-      end
+    local values = Roles.getList(role)
+    local isMulti = Roles.MULTI[role] == true
+    local pickerOpen = state.setupPickerRole == role
+    local rolePorts = ROLE_NEEDS_INVENTORY[role] and invPickerPorts
+      or pickerPorts
+
+    -- First assigned value sits on the role row; the rest stack below in
+    -- the same column.
+    if #values > 0 then
+      drawValue(cur, values[1])
     else
       at(xValue, cur, "-", colors.lightGray, colors.black)
     end
 
     local captRole = role
-    mkBtn(xSet, cur, "Set", colors.black, colors.yellow, function()
-      state.setupPickerRole = captRole
-      state.setupCustomMode = false
-      state.setupCustomInput = ""
-    end)
+    -- [Set] toggles the picker; green while open as a "tap to finish" hint.
+    mkBtn(
+      xSet,
+      cur,
+      "Set",
+      colors.black,
+      pickerOpen and colors.green or colors.yellow,
+      function()
+        if state.setupPickerRole == captRole then
+          state.setupPickerRole = nil
+        else
+          state.setupPickerRole = captRole
+          state.setupPickerOffset = 0
+        end
+        state.setupCustomMode = false
+        state.setupCustomInput = ""
+      end
+    )
 
     cur = cur + 1
 
+    for i = 2, #values do
+      if cur > H - 1 then
+        break
+      end
+      fill(cur, colors.black)
+      drawValue(cur, values[i])
+      cur = cur + 1
+    end
+
     -- Inline picker
-    if state.setupPickerRole == role then
+    if pickerOpen then
       if state.setupCustomMode then
         if cur <= H - 1 then
           fill(cur, colors.black)
@@ -2175,66 +2241,58 @@ local function drawSetup()
           cur = cur + 1
         end
       else
-        -- Labeled peripherals + Custom + Clear in a wrapping row
-        local RIGHT = W - 2
-        local function nextRow()
-          cur = cur + 1
-          if cur <= H - 1 then
-            fill(cur, colors.black)
-          end
-          return L + 2
-        end
-        local x = L + 2
+        -- Single paginated row of labeled peripherals (same pager as the
+        -- +RECIPE machine picker). Tapping toggles for multi roles and
+        -- selects-and-closes for single ones.
         if cur <= H - 1 then
           fill(cur, colors.black)
-        end
 
-        for _, item in ipairs(state.labelItems) do
-          if item.label ~= "" then
-            local bw = #item.label + 2
-            if x + bw - 1 > RIGHT then
-              x = nextRow()
+          local selectedSet = {}
+          for _, port in ipairs(rolePorts) do
+            local key = Labels.get(port) or port
+            for _, v in ipairs(values) do
+              if v == key or v == port then
+                selectedSet[port] = true
+                break
+              end
             end
-            if cur > H - 1 then
-              break
-            end
-            local captLabel = item.label
-            mkBtn(x, cur, item.label, colors.black, colors.cyan, function()
-              pcall(Roles.set, captRole, captLabel)
-              state.setupPickerRole = nil
-            end)
-            x = x + bw + 1
           end
+
+          drawMachinePager(cur, rolePorts, selectedSet, function()
+            return state.setupPickerOffset
+          end, function(o)
+            state.setupPickerOffset = o
+          end, function(port)
+            local value = Labels.get(port) or port
+            if isMulti then
+              pcall(Roles.toggle, captRole, value)
+            else
+              pcall(Roles.set, captRole, value)
+              state.setupPickerRole = nil
+            end
+          end, "No labeled peripherals")
+          cur = cur + 1
         end
 
-        -- Custom button
-        local cbw = #" Custom " + 1
-        if x + cbw - 1 > RIGHT then
-          x = nextRow()
-        end
+        -- Custom / Clear row
         if cur <= H - 1 then
+          fill(cur, colors.black)
+          local x = L + 2
           mkBtn(x, cur, "Custom", colors.black, colors.gray, function()
             state.setupCustomMode = true
             state.setupCustomInput = ""
           end)
-          x = x + cbw
-        end
-
-        -- Clear button (only if explicitly set)
-        if explicit and cur <= H - 1 then
-          local clbw = #" Clear " + 1
-          if x + clbw - 1 > RIGHT then
-            x = nextRow()
-          end
-          if cur <= H - 1 then
+          x = x + #" Custom " + 1
+          if #values > 0 then
             mkBtn(x, cur, "Clear", colors.black, colors.red, function()
               pcall(Roles.clear, captRole)
-              state.setupPickerRole = nil
+              if not isMulti then
+                state.setupPickerRole = nil
+              end
             end)
           end
+          cur = cur + 1
         end
-
-        cur = cur + 1
       end
     end
   end
@@ -2544,8 +2602,7 @@ end
 reloadMachines = function()
   local known = {}
   for _, role in ipairs(Roles.LIST) do
-    local p = Roles.getPort(role)
-    if p then
+    for _, p in ipairs(Roles.getPorts(role)) do
       known[p] = true
     end
   end
@@ -2759,10 +2816,15 @@ function UI.run(monitorName)
           drawScreen()
         elseif key == keys.enter then
           if state.setupCustomInput ~= "" then
-            pcall(Roles.set, state.setupPickerRole, state.setupCustomInput)
+            if Roles.MULTI[state.setupPickerRole] then
+              -- Multi role: append and keep the picker open for more.
+              pcall(Roles.toggle, state.setupPickerRole, state.setupCustomInput)
+            else
+              pcall(Roles.set, state.setupPickerRole, state.setupCustomInput)
+              state.setupPickerRole = nil
+            end
           end
           state.setupCustomMode = false
-          state.setupPickerRole = nil
           drawScreen()
         elseif key == keys.escape then
           state.setupCustomMode = false

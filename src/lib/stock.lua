@@ -1,6 +1,6 @@
 local DisplayNames = require("lib.display_names")
-local Labels = require("lib.labels")
 local Logger = require("lib.logger")
+local MultiInv = require("lib.multi_inv")
 local Recipes = require("lib.recipes")
 local Roles = require("lib.roles")
 local Utils = require("lib.utils")
@@ -17,8 +17,13 @@ local function listItems(p)
 end
 
 local function getStockView()
-  local name = Roles.getPort("stock_view")
-  return name and peripheral.wrap(name) or nil
+  -- pcall keeps the old graceful behavior: an unset role or a disconnected
+  -- port yields nil (empty stock) instead of an error.
+  local ok, inv = pcall(MultiInv.forRole, "stock_view")
+  if not ok then
+    return nil
+  end
+  return inv
 end
 
 -- Returns item detail from a peripheral, preferring getStockItemDetail (ME/custom
@@ -31,8 +36,7 @@ local function getItemDetail(p, slot)
 end
 
 local function getStockIn()
-  local name = Roles.getPort("stock_in")
-  return name and peripheral.wrap(name) or nil
+  return (MultiInv.forRole("stock_in"))
 end
 
 function Stock.getMissingItems(items)
@@ -394,11 +398,14 @@ end
 -- first; custom view peripherals may not expose size/list, so it falls back
 -- to Stock Out, which faces the same storage.
 local function slotInventory()
-  local name = Roles.getPort("stock_view")
-  local inv = name and peripheral.wrap(name) or nil
+  -- pcall: a disconnected Stock View port falls through to Stock Out
+  -- (same as the old wrap-returns-nil behavior) instead of erroring.
+  local ok, inv, name = pcall(MultiInv.forRole, "stock_view")
+  if not ok then
+    inv, name = nil, nil
+  end
   if not (inv and inv.size and inv.list) then
-    name = Roles.getPort("stock_out")
-    inv = name and peripheral.wrap(name) or nil
+    inv, name = MultiInv.forRole("stock_out")
   end
   if not (inv and inv.size and inv.list) then
     Logger.raiseError(
