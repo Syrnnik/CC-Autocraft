@@ -2274,7 +2274,18 @@ local function drawSetup()
           end, function(o)
             state.setupPickerOffset = o
           end, function(port)
-            local value = Labels.get(port) or port
+            local label = Labels.get(port)
+            -- A stored entry may reference this peripheral by label OR by
+            -- raw port (legacy configs). Toggle whichever form is stored,
+            -- otherwise a tap would add the same peripheral twice.
+            local value = nil
+            for _, v in ipairs(values) do
+              if v == port or (label and v == label) then
+                value = v
+                break
+              end
+            end
+            value = value or label or port
             if isMulti then
               pcall(Roles.toggle, captRole, value)
             else
@@ -2562,7 +2573,9 @@ end
 local function drawScreen()
   buttons = {}
   mon.setBackgroundColor(colors.black)
-  mon.clear()
+  -- No mon.clear() here: every tab drawer fills all its rows itself, and
+  -- clearing first blanks the whole screen for the duration of the redraw
+  -- (visible as flicker on slower draws).
   drawTabs()
   if state.tab == "recipes" then
     drawRecipesList()

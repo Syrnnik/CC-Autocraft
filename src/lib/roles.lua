@@ -83,10 +83,18 @@ function Roles.getList(role)
 end
 
 -- Returns the resolved peripheral port names for a role (may be empty).
+-- Deduplicated: two stored values resolving to the same port (e.g. a label
+-- and the raw port name) yield that port once, so a merged inventory never
+-- counts the same storage twice.
 function Roles.getPorts(role)
   local ports = {}
+  local seen = {}
   for _, value in ipairs(Roles.getList(role)) do
-    table.insert(ports, Labels.resolvePort(value))
+    local port = Labels.resolvePort(value)
+    if port and not seen[port] then
+      seen[port] = true
+      table.insert(ports, port)
+    end
   end
   return ports
 end

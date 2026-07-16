@@ -3,18 +3,25 @@ local Config = require("lib.config")
 local Labels = {}
 
 local path = Config.LABELS_PATH
+local _cache = nil -- in-memory cache; nil means not loaded yet
 
 local function load()
+  if _cache then
+    return _cache
+  end
   if not fs.exists(path) then
-    return {}
+    _cache = {}
+    return _cache
   end
   local f = fs.open(path, "r")
   local content = f.readAll()
   f.close()
-  return textutils.unserializeJSON(content) or {}
+  _cache = textutils.unserializeJSON(content) or {}
+  return _cache
 end
 
 local function save(data)
+  _cache = data
   if not fs.exists("data") then
     fs.makeDir("data")
   end
