@@ -354,6 +354,11 @@ function Stock.getMaxBatchForMachineRecipe(recipe)
     end
   end
 
+  -- Fluid-only recipe: no item stacks to fit, so nothing limits the batch.
+  if next(needed) == nil then
+    return math.huge
+  end
+
   -- Call getItemDetail only for recipe items, not all items in stock.
   local maxCountFor = {}
   if stockIn then

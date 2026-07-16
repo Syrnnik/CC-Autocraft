@@ -20,6 +20,7 @@ local COMPUTER_FILES = {
   "lib/config.lua",
   "lib/crafting.lua",
   "lib/display_names.lua",
+  "lib/fluids.lua",
   "lib/labels.lua",
   "lib/logger.lua",
   "lib/multi_inv.lua",

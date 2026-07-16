@@ -1,4 +1,5 @@
 local Config = require("lib.config")
+local Fluids = require("lib.fluids")
 local Labels = require("lib.labels")
 local Logger = require("lib.logger")
 local MultiInv = require("lib.multi_inv")
@@ -37,6 +38,91 @@ end
 local networkEvents = Config.NETWORK_EVENTS
 
 local Crafting = {}
+
+-- Stock totals with fluid pool levels merged in under prefixed names, the
+-- shape the planner expects ("fluid:minecraft:lava" = mB).
+local function mergedTotals()
+  local totals, maxDmg = Stock.getDurabilityAwareTotals()
+  for name, mb in pairs(Fluids.getTotals()) do
+    totals[Fluids.PREFIX .. name] = mb
+  end
+  return totals, maxDmg
+end
+
+-- Human-readable name for a missing-ingredient report line.
+local function missingLine(name, count)
+  if Fluids.isFluidName(name) then
+    local fluid = Fluids.stripPrefix(name)
+    local display = fluid:match("^[^:]+:(.+)") or fluid
+    return "- " .. display .. " x" .. count .. "mB"
+  end
+  local display = name:match("^[^:]+:(.+)") or name
+  return "- " .. display .. " x" .. count
+end
+
+-- Pushes a machine recipe's fluids (scaled by batchSize) from the pool into
+-- their processors. Raises a truthful error when the pool cannot cover the
+-- request or a transfer under-delivers.
+local function pushRecipeFluids(recipe, batchSize, resolvePort)
+  for _, fluid in ipairs(recipe.fluids or {}) do
+    if not fluid.processor then
+      Logger.raiseError(
+        string.format(
+          "No machine assigned for fluid '%s' in recipe",
+          fluid.name
+        )
+      )
+    end
+    local need = fluid.mb * batchSize
+    local have = Fluids.count(fluid.name)
+    if have < need then
+      Logger.raiseError(
+        string.format(
+          "Not enough fluid '%s': need %dmB, have %dmB",
+          fluid.name,
+          need,
+          have
+        )
+      )
+    end
+    local port = resolvePort(fluid.processor)
+    Logger.printInfo(
+      string.format("Pushing %dmB of '%s' to '%s'", need, fluid.name, port)
+    )
+    local moved = Fluids.extractTo(port, fluid.name, need)
+    if moved < need then
+      -- Return what did move so a failed step doesn't strand fluid in the
+      -- machine, then report the real shortfall.
+      Fluids.depositFrom(port, fluid.name, moved)
+      Logger.raiseError(
+        string.format(
+          "Failed to move fluid '%s' to '%s': moved %d/%dmB"
+            .. " (machine tank full or incompatible?)",
+          fluid.name,
+          port,
+          moved,
+          need
+        )
+      )
+    end
+  end
+end
+
+-- Returns leftover input fluids from every fluid processor back to the pool
+-- (used after a cycle or a failed/timed-out craft).
+local function reclaimRecipeFluids(recipe, resolvePort)
+  local seen = {}
+  for _, fluid in ipairs(recipe.fluids or {}) do
+    if fluid.processor then
+      local port = resolvePort(fluid.processor)
+      local key = port .. "\0" .. fluid.name
+      if not seen[key] then
+        seen[key] = true
+        pcall(Fluids.depositFrom, port, fluid.name)
+      end
+    end
+  end
+end
 
 -- ── Cooperative locks for pipelined plan execution ──────────
 -- Plan steps run as parallel coroutines (see craftItem). Multitasking in CC
@@ -260,10 +346,22 @@ function Crafting.getInterfaceItems()
   return items
 end
 
--- Push machineItems from the recipe interface to their processors, wait for
--- a result to appear in resultProcessor, pull it back, then clear all machines.
-function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
+-- Push machineItems from the recipe interface (and machineFluids from the
+-- fluid pool) to their processors, wait for a result to appear in
+-- resultProcessor, pull it back, then clear all machines.
+--
+-- machineFluids: optional list of { name, mb, processor(port) }.
+-- The result may be an item (returned as getItemDetail table, as before) or
+-- a fluid: when no item appears but the amount of some fluid in the result
+-- machine grows, the craft result is that growth, returned as
+-- { isFluid = true, name = <fluid id>, count = <mB produced> }.
+function Crafting.craftNewMachineRecipe(
+  machineItems,
+  resultProcessor,
+  machineFluids
+)
   local interface = Utils.wrapPeripheral(interfaceName())
+  machineFluids = machineFluids or {}
 
   -- Items placed directly into the result machine (ignored during polling
   -- until they are transformed into the actual result).
@@ -271,6 +369,32 @@ function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
   for _, item in pairs(machineItems) do
     if item.processor == resultProcessor then
       inputsToResult[item.name] = true
+    end
+  end
+  -- Same for fluids routed into the result machine.
+  local fluidsToResult = {}
+  for _, fluid in ipairs(machineFluids) do
+    if fluid.processor == resultProcessor then
+      fluidsToResult[fluid.name] = true
+    end
+  end
+
+  -- Snapshot of the result machine's tanks BEFORE any push: fluid output is
+  -- measured as growth above this baseline.
+  local fluidBaseline = Fluids.tankLevels(resultProcessor)
+
+  -- Check fluid availability up front so nothing moves on a shortage.
+  for _, fluid in ipairs(machineFluids) do
+    local have = Fluids.count(fluid.name)
+    if have < fluid.mb then
+      Logger.raiseError(
+        string.format(
+          "Not enough fluid '%s': need %dmB, have %dmB",
+          fluid.name,
+          fluid.mb,
+          have
+        )
+      )
     end
   end
 
@@ -293,40 +417,83 @@ function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
     end
   end
   Utils.runParallel(pushTasks)
-  if failedItem then
-    Logger.raiseError(
-      string.format(
-        "Failed to push '%s' to '%s'",
-        failedItem.name,
-        failedItem.processor
+
+  local failedFluid = nil
+  if not failedItem then
+    for _, fluid in ipairs(machineFluids) do
+      Logger.printInfo(
+        string.format(
+          "Pushing %dmB of '%s' to '%s'",
+          fluid.mb,
+          fluid.name,
+          fluid.processor
+        )
       )
-    )
-  end
-
-  -- Poll: wait until a non-input item appears in resultProcessor
-  local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
-  local destSlot = Crafting.getSlotToPutItem()
-  local crafted = nil
-
-  for _ = 1, steps do
-    local listing = Utils.wrapPeripheral(resultProcessor).list()
-    local resultSlot = nil
-    for s, sItem in pairs(listing) do
-      if not inputsToResult[sItem.name] then
-        resultSlot = s
+      local moved = Fluids.extractTo(fluid.processor, fluid.name, fluid.mb)
+      if moved < fluid.mb then
+        failedFluid = { fluid = fluid, moved = moved }
         break
       end
     end
-    if resultSlot then
-      interface.pullItems(resultProcessor, resultSlot, nil, destSlot)
-      crafted = interface.getItemDetail(destSlot)
-      break
+  end
+
+  -- Poll: wait until a non-input item appears in resultProcessor, or some
+  -- fluid in it grows above the baseline. A growing fluid is sampled until
+  -- it stops changing (two stable polls) so slow machines report the full
+  -- per-craft amount, not a snapshot mid-fill.
+  local crafted = nil
+  if not failedItem and not failedFluid then
+    local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
+    local destSlot = Crafting.getSlotToPutItem()
+
+    for _ = 1, steps do
+      local listing = Utils.wrapPeripheral(resultProcessor).list()
+      local resultSlot = nil
+      for s, sItem in pairs(listing) do
+        if not inputsToResult[sItem.name] then
+          resultSlot = s
+          break
+        end
+      end
+      if resultSlot then
+        interface.pullItems(resultProcessor, resultSlot, nil, destSlot)
+        crafted = interface.getItemDetail(destSlot)
+        break
+      end
+
+      local grownFluid, grownBy = nil, 0
+      for name, level in pairs(Fluids.tankLevels(resultProcessor)) do
+        local delta = level - (fluidBaseline[name] or 0)
+        if delta > 0 and not fluidsToResult[name] then
+          grownFluid, grownBy = name, delta
+          break
+        end
+      end
+      if grownFluid then
+        local stable = 0
+        while stable < 2 do
+          os.sleep(0.5)
+          local level = Fluids.tankLevels(resultProcessor)[grownFluid] or 0
+          local delta = level - (fluidBaseline[grownFluid] or 0)
+          if delta > grownBy then
+            grownBy = delta
+            stable = 0
+          else
+            stable = stable + 1
+          end
+        end
+        crafted = { isFluid = true, name = grownFluid, count = grownBy }
+        -- Bank the produced fluid into the pool (baseline stays untouched).
+        Fluids.depositFrom(resultProcessor, grownFluid, grownBy)
+        break
+      end
+
+      os.sleep(0.5)
     end
-    os.sleep(0.5)
   end
 
   -- Always clear all machines (whether success or timeout); one concurrent
-  -- task per machine.
+  -- task per machine. Leftover input fluids go back to the pool too.
   local seen = {}
   local clearTasks = {}
   for _, item in pairs(machineItems) do
@@ -341,7 +508,35 @@ function Crafting.craftNewMachineRecipe(machineItems, resultProcessor)
     end
   end
   Utils.runParallel(clearTasks)
+  local seenFluid = {}
+  for _, fluid in ipairs(machineFluids) do
+    local key = fluid.processor .. "\0" .. fluid.name
+    if not seenFluid[key] then
+      seenFluid[key] = true
+      pcall(Fluids.depositFrom, fluid.processor, fluid.name)
+    end
+  end
 
+  if failedItem then
+    Logger.raiseError(
+      string.format(
+        "Failed to push '%s' to '%s'",
+        failedItem.name,
+        failedItem.processor
+      )
+    )
+  end
+  if failedFluid then
+    Logger.raiseError(
+      string.format(
+        "Failed to move fluid '%s' to '%s': moved %d/%dmB",
+        failedFluid.fluid.name,
+        failedFluid.fluid.processor,
+        failedFluid.moved,
+        failedFluid.fluid.mb
+      )
+    )
+  end
   if not crafted then
     Logger.raiseError(
       "Machine craft timed out: no result from " .. resultProcessor
@@ -386,6 +581,15 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
         end
       end
     end
+    for _, fluid in ipairs(recipe.fluids or {}) do
+      if fluid.processor then
+        local port = resolveItemPort(fluid.processor)
+        if not seenPort[port] then
+          seenPort[port] = true
+          lockPorts[#lockPorts + 1] = port
+        end
+      end
+    end
   end
   lockMachines(lockPorts)
 
@@ -404,6 +608,73 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
   unlockMachines(lockPorts)
   if not okBody then
     error(errBody, 0)
+  end
+end
+
+-- Waits for a fluid-result machine recipe to produce its fluid, draining the
+-- result machine's tank into the pool as the fluid appears (so a small
+-- machine tank never stalls a big batch). `baseline` is the amount of the
+-- result fluid already in the machine before inputs were pushed: it stays
+-- untouched, only growth above it counts as output.
+local function collectFluidResult(
+  recipe,
+  batchSize,
+  onEach,
+  resultPort,
+  baseline
+)
+  local fluidName = recipe.name
+  local perCraft = recipe.count or 1
+  local totalNeeded = batchSize * perCraft
+  local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
+  local produced = 0 -- mB banked into the pool so far
+  local cyclesDone = 0
+
+  while produced < totalNeeded do
+    local moved = 0
+    for _ = 1, steps do
+      local level = Fluids.tankLevels(resultPort)[fluidName] or 0
+      local drainable = level - baseline
+      if drainable > 0 then
+        moved = Fluids.depositFrom(resultPort, fluidName, drainable)
+        if moved > 0 then
+          break
+        end
+        -- The fluid is sitting in the machine but no pool tank accepts it.
+        Logger.raiseError(
+          string.format(
+            "Fluid storage full: could not deposit %dmB of '%s' (got %d/%dmB)",
+            drainable,
+            fluidName,
+            produced,
+            totalNeeded
+          )
+        )
+      end
+      os.sleep(0.5)
+    end
+    if moved == 0 then
+      Logger.raiseError(
+        string.format(
+          "Machine craft timed out: got %d/%dmB of '%s' from %s",
+          produced,
+          totalNeeded,
+          fluidName,
+          resultPort
+        )
+      )
+    end
+    produced = produced + moved
+    local newCycles = math.min(
+      batchSize - cyclesDone,
+      math.floor(produced / perCraft) - cyclesDone
+    )
+    cyclesDone = cyclesDone + newCycles
+    for _ = 1, newCycles do
+      if onEach then
+        onEach(1)
+      end
+    end
   end
 end
 
@@ -426,10 +697,20 @@ function Crafting.runMachineCycle(
     end
   end
 
-  -- Claim stock slots and push the full batch under the stock lock so a
-  -- concurrent step can't claim the same slots.
+  local isFluidResult = recipe.resultType == "fluid"
+  -- Snapshot BEFORE any push: an input fluid routed into the result machine
+  -- must not be mistaken for output.
+  local fluidBaseline = 0
+  if isFluidResult then
+    fluidBaseline = Fluids.tankLevels(resultPort)[recipe.name] or 0
+  end
+
+  -- Claim stock slots (and pool fluids) and push the full batch under the
+  -- stock lock so a concurrent step can't claim the same resources.
   lockStock()
   local okPush, errPush = pcall(function()
+    -- Claim items first: getItemsForMachineRecipe raises on shortage before
+    -- anything moves, so a missing item can't strand fluid in a machine.
     local pushList = Stock.getItemsForMachineRecipe(recipe, batchSize)
     for _, item in pairs(pushList) do
       if not item.processor then
@@ -438,6 +719,7 @@ function Crafting.runMachineCycle(
         )
       end
     end
+    pushRecipeFluids(recipe, batchSize, resolveItemPort)
     local failedItem, failedPort
     local pushTasks = {}
     for _, item in pairs(pushList) do
@@ -465,57 +747,67 @@ function Crafting.runMachineCycle(
   end)
   unlockStock()
   if not okPush then
+    -- A partial push may have left fluid in the machines; return it.
+    reclaimRecipeFluids(recipe, resolveItemPort)
     error(errPush, 0)
   end
 
-  -- Collect results until we have batchSize * recipe.count items.
-  -- Multiple cycles may stack into one slot if the machine is fast, so we
-  -- count items pulled (not slot pulls) to track progress correctly.
-  local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
-  local totalNeeded = batchSize * (recipe.count or 1)
-  local itemsPulled = 0
-  local cyclesDone = 0
+  local okCollect, errCollect = pcall(function()
+    if isFluidResult then
+      collectFluidResult(recipe, batchSize, onEach, resultPort, fluidBaseline)
+      return
+    end
 
-  while itemsPulled < totalNeeded do
-    local found = false
-    for _ = 1, steps do
-      local listing = Utils.wrapPeripheral(resultPort).list()
-      local resultSlot = nil
-      for s, sItem in pairs(listing) do
-        if not inputsToResult[sItem.name] then
-          resultSlot = s
-          break
-        end
-      end
-      if resultSlot then
-        local n = stockOut.pullItems(resultPort, resultSlot)
-        itemsPulled = itemsPulled + n
-        local newCycles = math.floor(itemsPulled / (recipe.count or 1))
-          - cyclesDone
-        cyclesDone = cyclesDone + newCycles
-        for _ = 1, newCycles do
-          if onEach then
-            onEach(1)
+    -- Collect results until we have batchSize * recipe.count items.
+    -- Multiple cycles may stack into one slot if the machine is fast, so we
+    -- count items pulled (not slot pulls) to track progress correctly.
+    local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
+    local totalNeeded = batchSize * (recipe.count or 1)
+    local itemsPulled = 0
+    local cyclesDone = 0
+
+    while itemsPulled < totalNeeded do
+      local found = false
+      for _ = 1, steps do
+        local listing = Utils.wrapPeripheral(resultPort).list()
+        local resultSlot = nil
+        for s, sItem in pairs(listing) do
+          if not inputsToResult[sItem.name] then
+            resultSlot = s
+            break
           end
         end
-        found = true
-        break
+        if resultSlot then
+          local n = stockOut.pullItems(resultPort, resultSlot)
+          itemsPulled = itemsPulled + n
+          local newCycles = math.floor(itemsPulled / (recipe.count or 1))
+            - cyclesDone
+          cyclesDone = cyclesDone + newCycles
+          for _ = 1, newCycles do
+            if onEach then
+              onEach(1)
+            end
+          end
+          found = true
+          break
+        end
+        os.sleep(0.5)
       end
-      os.sleep(0.5)
-    end
-    if not found then
-      Logger.raiseError(
-        string.format(
-          "Machine craft timed out: got %d/%d items from %s",
-          itemsPulled,
-          totalNeeded,
-          resultPort
+      if not found then
+        Logger.raiseError(
+          string.format(
+            "Machine craft timed out: got %d/%d items from %s",
+            itemsPulled,
+            totalNeeded,
+            resultPort
+          )
         )
-      )
+      end
     end
-  end
+  end)
 
-  -- Always clear all machines; one concurrent task per machine.
+  -- Always clear all machines (success or timeout); one concurrent task per
+  -- machine. Leftover input fluids go back to the pool the same way.
   local seen = {}
   local clearTasks = {}
   for _, item in pairs(recipe.items) do
@@ -530,6 +822,11 @@ function Crafting.runMachineCycle(
     end
   end
   Utils.runParallel(clearTasks)
+  reclaimRecipeFluids(recipe, resolveItemPort)
+
+  if not okCollect then
+    error(errCollect, 0)
+  end
 end
 
 -- Pull all items from the crafter back to the recipe interface
@@ -734,7 +1031,7 @@ function Crafting.craftItem(
 )
   Logger.printInfo(string.format("Planning '%s' x%d..", recipeName, count))
 
-  local totals, maxDmg = Stock.getDurabilityAwareTotals()
+  local totals, maxDmg = mergedTotals()
   local plan = Planner.buildCraftPlan(recipeName, count, totals, rootRecipe)
 
   if #plan == 0 then
@@ -750,8 +1047,7 @@ function Crafting.craftItem(
   if #missing > 0 then
     local lines = { "Missing items:" }
     for _, item in ipairs(missing) do
-      local display = item.name:match("^[^:]+:(.+)") or item.name
-      table.insert(lines, "- " .. display .. " x" .. item.count)
+      table.insert(lines, missingLine(item.name, item.count))
     end
     error(table.concat(lines, "\n"), 0)
   end
@@ -797,9 +1093,10 @@ function Crafting.craftItem(
 
   local runners = {}
   for i, step in ipairs(plan) do
-    -- Earlier plan steps that produce one of this step's ingredients.
+    -- Earlier plan steps that produce one of this step's ingredients
+    -- (fluids included: their plan-space names line up via the prefix).
     local deps = {}
-    for _, ingredient in ipairs(Recipes.getRequiredItemsPlainList(step.recipe)) do
+    for _, ingredient in ipairs(Planner.getAllIngredients(step.recipe)) do
       for j = 1, i - 1 do
         if plan[j].name == ingredient.name then
           deps[#deps + 1] = ingredient.name
@@ -868,7 +1165,7 @@ end
 
 -- Builds and returns the craft plan without executing it (for UI preview).
 function Crafting.buildPlan(recipeName, count, rootRecipe)
-  local totals = Stock.getDurabilityAwareTotals()
+  local totals = mergedTotals()
   return Planner.buildCraftPlan(recipeName, count, totals, rootRecipe)
 end
 

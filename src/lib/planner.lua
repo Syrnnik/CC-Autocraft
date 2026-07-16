@@ -1,8 +1,58 @@
+local Fluids = require("lib.fluids")
 local Logger = require("lib.logger")
 local Recipes = require("lib.recipes")
 local Stock = require("lib.stock")
 
 local Planner = {}
+
+-- Fluids share the planner's virtual-stock tables with items, keyed as
+-- "fluid:<id>" so a fluid can never collide with an item of the same id.
+-- Amounts for fluid entries are mB, not item counts.
+
+-- Combined ingredient list of a recipe: items (as-is) plus fluids under
+-- their prefixed names. Every planner/validator/scheduler pass uses this so
+-- fluid requirements flow through the exact same accounting as items.
+function Planner.getAllIngredients(recipe)
+  local list = Recipes.getRequiredItemsPlainList(recipe)
+  for _, fluid in ipairs(Recipes.getRequiredFluidsPlainList(recipe)) do
+    table.insert(list, { name = Fluids.PREFIX .. fluid.name, count = fluid.mb })
+  end
+  return list
+end
+
+-- Recipe lookup that understands prefixed fluid names. Plain names resolve
+-- to item recipes only (a fluid recipe stored under the same id must not
+-- shadow an item recipe and vice versa); "fluid:" names resolve to
+-- fluid-result recipes.
+local function resolveRecipe(recipes, name)
+  if Fluids.isFluidName(name) then
+    local fluidName = Fluids.stripPrefix(name)
+    for _, recipe in pairs(recipes) do
+      if recipe.resultType == "fluid" and recipe.name == fluidName then
+        return recipe
+      end
+    end
+    return nil
+  end
+  local exact = recipes[name]
+  if exact and exact.resultType ~= "fluid" then
+    return exact
+  end
+  for _, recipe in pairs(recipes) do
+    if recipe.name == name and recipe.resultType ~= "fluid" then
+      return recipe
+    end
+  end
+  return nil
+end
+
+-- Plan-space name of what a recipe produces ("fluid:<id>" for fluid results).
+local function producedName(recipe)
+  if recipe.resultType == "fluid" then
+    return Fluids.PREFIX .. recipe.name
+  end
+  return recipe.name
+end
 
 -- Recursively builds an ordered craft plan (sub-crafts first, target last).
 -- Takes a stock snapshot once and tracks virtual consumption during planning,
@@ -49,13 +99,13 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
       available[name] = 0
     end
 
-    local recipe = explicitRecipe or Recipes.getFromSnapshot(allRecipes, name)
+    local recipe = explicitRecipe or resolveRecipe(allRecipes, name)
     if not recipe then
       -- Base material: no recipe, must come from stock.
       return
     end
 
-    local ingredients = Recipes.getRequiredItemsPlainList(recipe)
+    local ingredients = Planner.getAllIngredients(recipe)
 
     -- Cycle guard: if crafting `name` would need an ingredient that is already
     -- being expanded higher up the tree, we'd recurse forever (e.g. an ingot
@@ -88,7 +138,21 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
     )
   end
 
-  expand(recipeName, neededCount, false, rootRecipe)
+  -- Root: fluid recipes plan under their prefixed name so consumers of the
+  -- fluid (and the virtual-stock bookkeeping) line up with the plan step.
+  local rootPlanName = recipeName
+  do
+    local root = rootRecipe or resolveRecipe(allRecipes, recipeName)
+    if not root and not Fluids.isFluidName(recipeName) then
+      -- The name may belong to a fluid-only recipe (crafted from the
+      -- RECIPES tab, which passes the bare fluid id).
+      root = resolveRecipe(allRecipes, Fluids.PREFIX .. recipeName)
+    end
+    if root and root.resultType == "fluid" then
+      rootPlanName = Fluids.PREFIX .. Fluids.stripPrefix(recipeName)
+    end
+  end
+  expand(rootPlanName, neededCount, false, rootRecipe)
 
   -- Group duplicate steps: the same item can be reached through several
   -- branches of the tree (e.g. many sub-crafts each needing printed_silicon),
@@ -126,7 +190,7 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
       return
     end
     mark[name] = 1
-    for _, ingredient in ipairs(Recipes.getRequiredItemsPlainList(a.recipe)) do
+    for _, ingredient in ipairs(Planner.getAllIngredients(a.recipe)) do
       if aggregated[ingredient.name] then
         visit(ingredient.name)
       end
@@ -157,7 +221,7 @@ function Planner.validatePlan(plan, totals, maxDmg)
 
   for _, step in ipairs(plan) do
     local craftsCount = step.craftsCount
-    local ingredients = Recipes.getRequiredItemsPlainList(step.recipe)
+    local ingredients = Planner.getAllIngredients(step.recipe)
 
     for _, ingredient in pairs(ingredients) do
       local needed = ingredient.catalyst and 1 or ingredient.count * craftsCount
@@ -178,8 +242,8 @@ function Planner.validatePlan(plan, totals, maxDmg)
       end
     end
 
-    -- Account for items produced by this step
-    local name = step.recipe.name
+    -- Account for what this step produces (items or mB of a fluid)
+    local name = producedName(step.recipe)
     virtual[name] = (virtual[name] or 0) + step.recipe.count * craftsCount
   end
 

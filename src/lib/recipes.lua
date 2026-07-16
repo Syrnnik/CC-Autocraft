@@ -127,6 +127,26 @@ function Recipes.getRequiredItemsPlainList(recipe)
   return requiredItems
 end
 
+-- Aggregates recipe.fluids by fluid name (mB summed). Returns a list of
+-- { name, mb }; empty when the recipe uses no fluids.
+function Recipes.getRequiredFluidsPlainList(recipe)
+  local required = {}
+  for _, fluid in ipairs(recipe.fluids or {}) do
+    local found = false
+    for _, entry in ipairs(required) do
+      if entry.name == fluid.name then
+        entry.mb = entry.mb + fluid.mb
+        found = true
+        break
+      end
+    end
+    if not found then
+      table.insert(required, { name = fluid.name, mb = fluid.mb })
+    end
+  end
+  return required
+end
+
 function Recipes.getAllRecipes()
   local craftsFile = fs.open(recipesPath, "r")
   local crafts = {}
@@ -188,12 +208,17 @@ function Recipes.addNewRecipe(newRecipe)
   local name = newRecipe.name
   local displayName = newRecipe.displayName
 
-  -- Recipe identity is (name, displayName): reuse the existing slot only when
-  -- BOTH match, so a same-name item with a different displayName is stored as a
-  -- separate recipe instead of overwriting the old one.
+  -- Recipe identity is (name, displayName, resultType): reuse the existing
+  -- slot only when ALL match, so a same-name item with a different
+  -- displayName -- or a fluid recipe whose fluid id happens to equal an item
+  -- id -- is stored as a separate recipe instead of overwriting the old one.
   local key
   for k, recipe in pairs(recipes) do
-    if recipe.name == name and recipe.displayName == displayName then
+    if
+      recipe.name == name
+      and recipe.displayName == displayName
+      and recipe.resultType == newRecipe.resultType
+    then
       key = k
       break
     end
@@ -219,12 +244,16 @@ function Recipes.addNewRecipe(newRecipe)
   Recipes.saveAllRecipes(recipes)
 end
 
+-- recipeFluids: optional list of { name, mb, processor } (machine type only).
+-- craftedItem.isFluid marks a fluid result: the recipe is stored with
+-- resultType = "fluid", name = fluid id and count = mB produced per craft.
 function Recipes.saveRecipe(
   recipeItems,
   craftedItem,
   type,
   processor,
-  resultProcessor
+  resultProcessor,
+  recipeFluids
 )
   local items = {}
 
@@ -259,27 +288,48 @@ function Recipes.saveRecipe(
     type = type or "crafter",
   }
 
+  if craftedItem.isFluid then
+    recipe.resultType = "fluid"
+    recipe.maxCount = nil
+  end
+
   if type == "machine" then
     recipe.resultProcessor = toLabelOrPort(resultProcessor)
+    if recipeFluids and #recipeFluids > 0 then
+      recipe.fluids = {}
+      for _, fluid in ipairs(recipeFluids) do
+        table.insert(recipe.fluids, {
+          name = fluid.name,
+          mb = fluid.mb,
+          processor = toLabelOrPort(fluid.processor),
+        })
+      end
+    end
   else
     recipe.processor = toLabelOrPort(processor or Roles.get("crafter"))
   end
 
   -- Mirror the crafted item's displayName into the shared store so tables can
-  -- show a friendly name without re-scanning stock.
-  DisplayNames.set(craftedItem.name, craftedItem.displayName)
+  -- show a friendly name without re-scanning stock. Fluids have no
+  -- displayName (tanks() reports ids only), so there is nothing to mirror.
+  if not craftedItem.isFluid then
+    DisplayNames.set(craftedItem.name, craftedItem.displayName)
+  end
 
   Recipes.addNewRecipe(recipe)
 end
 
 -- Updates type, processor(s), and resultProcessor of an existing recipe.
 -- itemProcessors: { [itemName] = processorName } for machine recipes.
+-- recipeFluids: optional replacement fluid list { name, mb, processor }
+-- for machine recipes (nil leaves the stored fluids untouched).
 function Recipes.updateRecipeProcessor(
   key,
   type,
   processor,
   resultProcessor,
-  itemProcessors
+  itemProcessors,
+  recipeFluids
 )
   local recipes = Recipes.getAllRecipes()
   local storeKey = resolveStoredKey(recipes, key)
@@ -298,9 +348,24 @@ function Recipes.updateRecipeProcessor(
       local proc = itemProcessors and itemProcessors[item.name]
       item.processor = proc and toLabelOrPort(proc) or nil
     end
+    if recipeFluids then
+      if #recipeFluids > 0 then
+        recipe.fluids = {}
+        for _, fluid in ipairs(recipeFluids) do
+          table.insert(recipe.fluids, {
+            name = fluid.name,
+            mb = fluid.mb,
+            processor = toLabelOrPort(fluid.processor),
+          })
+        end
+      else
+        recipe.fluids = nil
+      end
+    end
   else
     recipe.processor = toLabelOrPort(processor or Roles.get("crafter"))
     recipe.resultProcessor = nil
+    recipe.fluids = nil
   end
 
   Recipes.saveAllRecipes(recipes)
@@ -360,7 +425,25 @@ function Recipes.findExisting(name, displayName)
   local recipes = Recipes.getAllRecipes()
 
   for key, recipe in pairs(recipes) do
-    if recipe.name == name and recipe.displayName == displayName then
+    if
+      recipe.name == name
+      and recipe.displayName == displayName
+      and recipe.resultType ~= "fluid"
+    then
+      return recipe, key
+    end
+  end
+
+  return nil
+end
+
+-- Finds an existing fluid-result recipe for the given fluid id.
+-- Returns the recipe and its storage key, or nil if none matches.
+function Recipes.findExistingFluid(name)
+  local recipes = Recipes.getAllRecipes()
+
+  for key, recipe in pairs(recipes) do
+    if recipe.resultType == "fluid" and recipe.name == name then
       return recipe, key
     end
   end

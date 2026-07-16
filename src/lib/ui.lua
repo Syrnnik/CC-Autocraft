@@ -1,6 +1,7 @@
 local Config = require("lib.config")
 local Crafting = require("lib.crafting")
 local DisplayNames = require("lib.display_names")
+local Fluids = require("lib.fluids")
 local Labels = require("lib.labels")
 local Roles = require("lib.roles")
 local Network = require("lib.network")
@@ -27,6 +28,11 @@ local state = {
   editTargetName = nil, -- item name of the recipe being edited (for display)
   stockItems = {}, -- { name, count } sorted by name
   stockPage = 1,
+  stockView = "items", -- "items" | "fluids"
+  stockFluids = {}, -- { name, count(mB) } sorted by name
+  stockFluidPage = 1,
+  stockFluidModTab = "all",
+  stockFluidModTabOffset = 0,
   stockScanning = false, -- storage slot scan in progress
   stockScanResult = nil, -- { total, used, free } or { error }
   stockAnalyzing = false, -- fragmentation analysis in progress
@@ -42,6 +48,14 @@ local state = {
   resultPickerOpen = false,
   machinePickerOffset = 0, -- horizontal scroll for the inline item->machine picker
   resultPickerOffset = 0, -- horizontal scroll for the "Result from:" picker
+  -- recipe fluids state (+Fluids section, machine recipes only)
+  recipeFluids = {}, -- { name, mb, processor } added via +Fluids
+  availableFluids = {}, -- fluid ids present in labeled tanks, sorted
+  fluidPickerOpen = false, -- +Fluids tapped: fluid list row visible
+  fluidPickerOffset = 0, -- horizontal scroll for the fluid list
+  selectedFluidIdx = nil, -- index in recipeFluids of the expanded row
+  fluidExpandMode = nil, -- "counter" (mB counter + machines) | "machines"
+  fluidMachinePickerOffset = 0, -- scroll for the fluid->machine picker
   -- checklist tab state
   checklistItems = nil, -- nil = not loaded, list = { name, needed, status }
   checklistNoClipboard = false,
@@ -79,6 +93,7 @@ local state = {
   -- craft screen state
   craftItem = nil, -- full item name being crafted
   craftKey = nil, -- storage key of the exact recipe variant to craft (or nil)
+  craftIsFluid = false, -- crafting a fluid recipe (amount is in mB)
   craftCount = 1,
   craftMsg = nil,
   craftMsgIsErr = false,
@@ -100,9 +115,22 @@ local getMod = Utils.getMod
 local stripMod = Utils.stripMod
 
 -- Friendly name for an item id: stored displayName if known, else the id with
--- its mod prefix stripped.
+-- its mod prefix stripped. Plan-space fluid names ("fluid:minecraft:lava")
+-- lose their prefix first so they render like any other name.
 local function resolveDisplay(name)
+  name = Fluids.stripPrefix(name)
   return DisplayNames.get(name) or stripMod(name)
+end
+
+-- Compact mB amount for tables: "500mB", "12.5K mB", "1.2M mB".
+local function fmtMb(mb)
+  if mb >= 1000000 then
+    return string.format("%.1fM mB", mb / 1000000)
+  end
+  if mb >= 10000 then
+    return string.format("%.1fK mB", mb / 1000)
+  end
+  return mb .. "mB"
 end
 
 -- Fuzzy search: splits `query` into whitespace-separated tokens and returns true
@@ -297,12 +325,14 @@ local function drawTable(opts)
       local queryStart = afterNav + searchBtnW + 1
       local refreshW = opts.onRefresh and (#" Refresh " + 1) or 0
       local scanW = opts.onScan and (#" Scan " + 1) or 0
+      local beforeW = opts.beforeRefresh and (#opts.beforeRefresh.label + 2 + 1)
+        or 0
       local display = state.searchQuery .. (state.searchMode and "_" or "")
-      if queryStart <= W - refreshW - scanW then
+      if queryStart <= W - refreshW - scanW - beforeW then
         at(
           queryStart,
           paginationY,
-          truncate(display, W - refreshW - scanW - queryStart),
+          truncate(display, W - refreshW - scanW - beforeW - queryStart),
           colors.black,
           colors.yellow
         )
@@ -319,6 +349,19 @@ local function drawTable(opts)
         colors.black,
         colors.orange,
         opts.onRefresh
+      )
+    end
+    -- Optional extra button between Scan and Refresh (e.g. the STOCK tab's
+    -- Fluids/Items toggle).
+    if opts.beforeRefresh then
+      xAfterRefresh = xAfterRefresh - (#opts.beforeRefresh.label + 2) - 1
+      mkBtn(
+        xAfterRefresh,
+        paginationY,
+        opts.beforeRefresh.label,
+        colors.black,
+        colors.cyan,
+        opts.beforeRefresh.fn
       )
     end
     if opts.onScan then
@@ -523,8 +566,10 @@ end
 
 local reloadRecipes
 local reloadStock
+local reloadStockFluids
 local reloadMachines
 local reloadMachineItems
+local reloadFluids
 local reloadLabels
 local reloadChecklist
 
@@ -596,12 +641,17 @@ local function drawTabs()
         elseif tab.id == "stock" then
           state.tab = "stock"
           state.stockPage = 1
+          state.stockFluidPage = 1
           state.stockScanResult = nil
           state.stockScanning = false
           state.stockAnalysis = nil
           state.stockAnalyzing = false
           state.stockFixing = false
-          reloadStock()
+          if state.stockView == "fluids" then
+            reloadStockFluids()
+          else
+            reloadStock()
+          end
         elseif tab.id == "checklist" then
           state.tab = "checklist"
           state.checklistPage = 1
@@ -614,9 +664,14 @@ local function drawTabs()
           state.pendingRecipe = nil
           state.editTarget = nil
           state.editTargetName = nil
+          state.recipeFluids = {}
+          state.fluidPickerOpen = false
+          state.selectedFluidIdx = nil
+          state.fluidExpandMode = nil
           reloadMachines()
           if state.type == "machine" then
             reloadMachineItems()
+            reloadFluids()
           end
         end
       end,
@@ -668,7 +723,7 @@ local function drawRecipesList()
     end
   end
 
-  -- Right zone: 1 gap + 6 count + 8 Craft + 7 Edit + 5 Del = 27
+  -- Right zone: 1 gap + 8 count + 8 Craft + 7 Edit + 5 Del = 29
   drawTable({
     topY = headerY,
     items = filtered,
@@ -679,11 +734,17 @@ local function drawRecipesList()
     displayName = function(name, item)
       return (item and item.displayName) or resolveDisplay(name)
     end,
-    rightW = 27,
+    rightW = 29,
     emptyMsg = "No recipes yet",
     onRefresh = reloadRecipes,
+    countText = function(item)
+      if item.resultType == "fluid" then
+        return fmtMb(item.count)
+      end
+      return "x" .. item.count
+    end,
     drawActions = function(item, row, rowBg, xCount)
-      local xCraft = xCount + 6
+      local xCraft = xCount + 8
       local xEdit = xCraft + 8
       local xDel = xEdit + 7
       local capturedKey = item.key
@@ -698,10 +759,14 @@ local function drawRecipesList()
           state.deleteTarget = nil
         end)
       else
+        local capturedIsFluid = item.resultType == "fluid"
+        local capturedCount = item.count
         mkBtn(xCraft, row, "Craft", colors.black, colors.yellow, function()
           state.craftItem = capturedName
           state.craftKey = capturedKey
-          state.craftCount = 1
+          state.craftIsFluid = capturedIsFluid
+          -- Fluid recipes are ordered in mB; default to one craft's yield.
+          state.craftCount = capturedIsFluid and (capturedCount or 1000) or 1
           state.craftMsg = nil
           state.craftMsgIsErr = false
           state.craftMsgIsDone = false
@@ -723,6 +788,10 @@ local function drawRecipesList()
             state.resultProcessor = recipe.resultProcessor
             state.resultPickerOpen = false
             state.selectedItemIdx = nil
+            state.recipeFluids = {}
+            state.fluidPickerOpen = false
+            state.selectedFluidIdx = nil
+            state.fluidExpandMode = nil
             if state.type == "machine" then
               state.machineItems = {}
               for _, item in ipairs(recipe.items) do
@@ -733,6 +802,14 @@ local function drawRecipesList()
                   processor = item.processor,
                 })
               end
+              for _, fluid in ipairs(recipe.fluids or {}) do
+                table.insert(state.recipeFluids, {
+                  name = fluid.name,
+                  mb = fluid.mb,
+                  processor = fluid.processor,
+                })
+              end
+              reloadFluids()
             end
           end
         end)
@@ -763,6 +840,8 @@ end
 --   getOffset/setOffset : accessors for this picker's scroll offset
 --   onSelect : callback(name) when a button is tapped
 --   emptyMsg : optional text when `machines` is empty
+--   labelFn  : optional label renderer (default machineLabel); lets the
+--              same pager list fluids or any other named things
 local function drawMachinePager(
   y,
   machines,
@@ -770,7 +849,8 @@ local function drawMachinePager(
   getOffset,
   setOffset,
   onSelect,
-  emptyMsg
+  emptyMsg,
+  labelFn
 )
   if #machines == 0 then
     at(L, y, emptyMsg or "No machines found", colors.gray, colors.black)
@@ -785,10 +865,11 @@ local function drawMachinePager(
   end
 
   -- mkBtn renders " label " → hit width is #label + 2.
+  labelFn = labelFn or machineLabel
   local labels = {}
   local totalW = 0
   for i, name in ipairs(machines) do
-    labels[i] = machineLabel(name)
+    labels[i] = labelFn(name)
     totalW = totalW + (#labels[i] + 2) + (i > 1 and 1 or 0)
   end
 
@@ -932,6 +1013,7 @@ local function drawNewRecipe()
         state.type = "machine"
         state.resultPickerOpen = false
         reloadMachineItems()
+        reloadFluids()
       end
     end
   )
@@ -1003,6 +1085,230 @@ local function drawNewRecipe()
           cur = cur + 1
         end
       end
+    end
+
+    -- ── Fluids section ─────────────────────────────────────────
+    -- Fluid ingredients added via +Fluids. Tap the red x at the row start to
+    -- remove the fluid, tap the fluid NAME to pick the machine it goes into,
+    -- tap the AMOUNT to open the mB counter.
+    for i, fluid in ipairs(state.recipeFluids) do
+      local isSelected = state.selectedFluidIdx == i
+      local captI = i
+
+      mkBtnTight(L, cur, "x", colors.white, colors.red, function()
+        table.remove(state.recipeFluids, captI)
+        state.selectedFluidIdx = nil
+        state.fluidExpandMode = nil
+      end)
+
+      local xName = L + 2
+      local nameText = resolveDisplay(fluid.name)
+      mkBtnTight(
+        xName,
+        cur,
+        nameText,
+        colors.lightBlue,
+        colors.black,
+        function()
+          if
+            state.selectedFluidIdx == captI
+            and state.fluidExpandMode == "machines"
+          then
+            state.selectedFluidIdx = nil
+            state.fluidExpandMode = nil
+          else
+            state.selectedFluidIdx = captI
+            state.fluidExpandMode = "machines"
+            state.fluidMachinePickerOffset = 0
+          end
+        end
+      )
+
+      local xAmount = xName + #nameText + 1
+      local amountText = fluid.mb .. "mB"
+      mkBtnTight(
+        xAmount,
+        cur,
+        amountText,
+        colors.yellow,
+        colors.black,
+        function()
+          if
+            state.selectedFluidIdx == captI
+            and state.fluidExpandMode == "counter"
+          then
+            state.selectedFluidIdx = nil
+            state.fluidExpandMode = nil
+          else
+            state.selectedFluidIdx = captI
+            state.fluidExpandMode = "counter"
+            state.fluidMachinePickerOffset = 0
+          end
+        end
+      )
+
+      local xAfter = xAmount + #amountText + 1
+      if fluid.processor then
+        local machineText = "> " .. machineLabel(fluid.processor)
+        at(
+          xAfter,
+          cur,
+          truncate(machineText, math.max(0, W - xAfter)),
+          colors.lightGray,
+          colors.black
+        )
+      end
+      cur = cur + 1
+
+      if isSelected then
+        if state.fluidExpandMode == "counter" then
+          -- -1000 -100 -10 -1 <value>mB +1 +10 +100 +1000
+          -- Tapping the value collapses the row.
+          local function addMb(delta)
+            local f = state.recipeFluids[captI]
+            f.mb = math.max(1, f.mb + delta)
+          end
+          local xb = L + 2
+          mkBtnTight(xb, cur, "-1000", colors.lightGray, colors.gray, function()
+            addMb(-1000)
+          end)
+          mkBtnTight(
+            xb + 6,
+            cur,
+            "-100",
+            colors.lightGray,
+            colors.gray,
+            function()
+              addMb(-100)
+            end
+          )
+          mkBtnTight(
+            xb + 11,
+            cur,
+            "-10",
+            colors.lightGray,
+            colors.gray,
+            function()
+              addMb(-10)
+            end
+          )
+          mkBtnTight(
+            xb + 15,
+            cur,
+            "-1",
+            colors.lightGray,
+            colors.gray,
+            function()
+              addMb(-1)
+            end
+          )
+          local valueText = string.format("%5d", fluid.mb) .. "mB"
+          mkBtnTight(
+            xb + 18,
+            cur,
+            valueText,
+            colors.black,
+            colors.yellow,
+            function()
+              state.selectedFluidIdx = nil
+              state.fluidExpandMode = nil
+            end
+          )
+          local xPlus = xb + 18 + #valueText + 1
+          mkBtnTight(xPlus, cur, "+1", colors.lightGray, colors.gray, function()
+            addMb(1)
+          end)
+          mkBtnTight(
+            xPlus + 3,
+            cur,
+            "+10",
+            colors.lightGray,
+            colors.gray,
+            function()
+              addMb(10)
+            end
+          )
+          mkBtnTight(
+            xPlus + 7,
+            cur,
+            "+100",
+            colors.lightGray,
+            colors.gray,
+            function()
+              addMb(100)
+            end
+          )
+          mkBtnTight(
+            xPlus + 12,
+            cur,
+            "+1000",
+            colors.lightGray,
+            colors.gray,
+            function()
+              addMb(1000)
+            end
+          )
+          cur = cur + 1
+        end
+
+        -- Machine picker: below the counter when it is open, alone otherwise.
+        drawMachinePager(
+          cur,
+          state.availableMachines,
+          state.recipeFluids[captI].processor,
+          function()
+            return state.fluidMachinePickerOffset
+          end,
+          function(o)
+            state.fluidMachinePickerOffset = o
+          end,
+          function(mname)
+            state.recipeFluids[captI].processor = mname
+            state.selectedFluidIdx = nil
+            state.fluidExpandMode = nil
+          end
+        )
+        cur = cur + 1
+      end
+    end
+
+    -- +Fluids: toggles a one-line list of fluids available in labeled tanks.
+    mkBtn(
+      L,
+      cur,
+      "+Fluids",
+      colors.black,
+      state.fluidPickerOpen and colors.green or colors.lightBlue,
+      function()
+        if state.fluidPickerOpen then
+          state.fluidPickerOpen = false
+        else
+          reloadFluids()
+          state.fluidPickerOpen = true
+          state.fluidPickerOffset = 0
+          state.selectedFluidIdx = nil
+          state.fluidExpandMode = nil
+        end
+      end
+    )
+    cur = cur + 1
+
+    if state.fluidPickerOpen then
+      drawMachinePager(cur, state.availableFluids, nil, function()
+        return state.fluidPickerOffset
+      end, function(o)
+        state.fluidPickerOffset = o
+      end, function(fname)
+        table.insert(
+          state.recipeFluids,
+          { name = fname, mb = 1000, processor = nil }
+        )
+        state.fluidPickerOpen = false
+        state.selectedFluidIdx = #state.recipeFluids
+        state.fluidExpandMode = "counter"
+        state.fluidMachinePickerOffset = 0
+      end, "No fluids in labeled tanks", resolveDisplay)
+      cur = cur + 1
     end
 
     -- Reset button (editing only): re-read items from the interface barrel
@@ -1092,6 +1398,13 @@ local function drawNewRecipe()
           return
         end
       end
+      for _, fluid in ipairs(pr.fluids or {}) do
+        if not fluid.processor then
+          state.msg = "Assign machine to all fluids"
+          state.msgIsErr = true
+          return
+        end
+      end
       if not state.resultProcessor then
         state.msg = "Select result machine"
         state.msgIsErr = true
@@ -1105,13 +1418,18 @@ local function drawNewRecipe()
       pr.craftedItem,
       state.type,
       processor,
-      state.resultProcessor
+      state.resultProcessor,
+      pr.fluids
     )
     if ok then
       state.pendingRecipe = nil
       state.editTarget = nil
       state.editTargetName = nil
       state.msg = nil
+      state.recipeFluids = {}
+      state.fluidPickerOpen = false
+      state.selectedFluidIdx = nil
+      state.fluidExpandMode = nil
       reloadRecipes()
     else
       state.msg = tostring(err)
@@ -1124,14 +1442,21 @@ local function drawNewRecipe()
   local testLabel = "Test Craft"
   mkBtn(L, cur, testLabel, colors.black, colors.lightBlue, function()
     if state.type == "machine" then
-      if #state.machineItems == 0 then
-        state.msg = "Barrel is empty"
+      if #state.machineItems == 0 and #state.recipeFluids == 0 then
+        state.msg = "No items or fluids for recipe"
         state.msgIsErr = true
         return
       end
       for _, item in ipairs(state.machineItems) do
         if not item.processor then
           state.msg = "Assign machine to all items"
+          state.msgIsErr = true
+          return
+        end
+      end
+      for _, fluid in ipairs(state.recipeFluids) do
+        if not fluid.processor then
+          state.msg = "Assign machine to all fluids"
           state.msgIsErr = true
           return
         end
@@ -1146,12 +1471,13 @@ local function drawNewRecipe()
     state.msgIsErr = false
     state.pendingRecipe = nil
     pendingTask = function()
-      local recipeItems, craftedItem
+      local recipeItems, craftedItem, recipeFluids
       if state.type == "machine" then
         local ok, result = pcall(
           Crafting.craftNewMachineRecipe,
           state.machineItems,
-          state.resultProcessor
+          state.resultProcessor,
+          state.recipeFluids
         )
         if not ok then
           state.msg = tostring(result)
@@ -1159,6 +1485,7 @@ local function drawNewRecipe()
           return
         end
         recipeItems, craftedItem = state.machineItems, result
+        recipeFluids = state.recipeFluids
       else
         local ok, a, b = pcall(Crafting.craftNewRecipe)
         if not ok then
@@ -1169,9 +1496,15 @@ local function drawNewRecipe()
         recipeItems, craftedItem = a, b
       end
       local name = craftedItem.name
-      local exists = Recipes.findExisting(name, craftedItem.displayName) ~= nil
+      local exists
+      if craftedItem.isFluid then
+        exists = Recipes.findExistingFluid(name) ~= nil
+      else
+        exists = Recipes.findExisting(name, craftedItem.displayName) ~= nil
+      end
       state.pendingRecipe = {
         items = recipeItems,
+        fluids = recipeFluids,
         craftedItem = craftedItem,
         name = name,
         alreadyExists = exists,
@@ -1186,6 +1519,10 @@ local function drawNewRecipe()
     state.msg = nil
     state.msgIsErr = false
     state.pendingRecipe = nil
+    state.recipeFluids = {}
+    state.fluidPickerOpen = false
+    state.selectedFluidIdx = nil
+    state.fluidExpandMode = nil
     pendingTask = function()
       local ok, err
       if state.type == "machine" then
@@ -1228,6 +1565,13 @@ local function drawNewRecipe()
           state.msgIsErr = true
           return
         end
+        for _, fluid in ipairs(state.recipeFluids) do
+          if not fluid.processor then
+            state.msg = "Assign machine to all fluids"
+            state.msgIsErr = true
+            return
+          end
+        end
         local itemProcessors = {}
         for _, item in ipairs(state.machineItems) do
           itemProcessors[item.name] = item.processor
@@ -1238,7 +1582,8 @@ local function drawNewRecipe()
           state.type,
           nil,
           state.resultProcessor,
-          itemProcessors
+          itemProcessors,
+          state.recipeFluids
         )
         if ok then
           state.msg = "Saved: " .. (state.editTargetName or state.editTarget)
@@ -1284,9 +1629,14 @@ local function drawNewRecipe()
   end
 
   local pr = state.pendingRecipe
-  local resultText = (pr.craftedItem.displayName or resolveDisplay(pr.name))
-    .. " x"
-    .. pr.craftedItem.count
+  local resultText
+  if pr.craftedItem.isFluid then
+    resultText = resolveDisplay(pr.name) .. " x" .. pr.craftedItem.count .. "mB"
+  else
+    resultText = (pr.craftedItem.displayName or resolveDisplay(pr.name))
+      .. " x"
+      .. pr.craftedItem.count
+  end
   at(
     L + 2,
     resultY + 1,
@@ -1331,6 +1681,7 @@ local function makePlanView(plan)
   for i, step in ipairs(plan) do
     copy[i] = {
       name = step.name,
+      isFluid = step.recipe.resultType == "fluid",
       perCraft = step.recipe.count,
       remaining = step.craftsCount * step.recipe.count,
     }
@@ -1372,7 +1723,8 @@ end
 -- key: optional storage key of the exact recipe variant to craft. When several
 -- recipes share `name`, this pins the craft to the selected one; nil crafts the
 -- first variant found for that name.
-local function makeCraftTask(name, count, key)
+-- isFluid: the recipe produces a fluid; `count` is mB (display only).
+local function makeCraftTask(name, count, key, isFluid)
   local rootRecipe = key and Recipes.getRecipeByKey(key) or nil
   return function(redraw)
     local ok, err = pcall(
@@ -1404,7 +1756,11 @@ local function makeCraftTask(name, count, key)
     if ok then
       state.craftPlan = nil
       state.craftMsgIsDone = true
-      state.craftMsg = "Done! " .. resolveDisplay(name) .. " x" .. count
+      state.craftMsg = "Done! "
+        .. resolveDisplay(name)
+        .. " x"
+        .. count
+        .. (isFluid and "mB" or "")
       state.craftProgress = 100
     else
       state.craftMsg = tostring(err)
@@ -1492,10 +1848,18 @@ local function drawCraftScreen()
 
   local cur = BODY_ROW + 2
 
-  -- Amount selector: only shown in single-item mode (not queue)
+  -- Amount selector: only shown in single-item mode (not queue).
+  -- Fluid recipes are ordered in mB, so they get x10 larger increments.
   if not state.craftQueue then
-    at(L, cur, "Amount:", colors.lightGray, colors.black)
-    local xb = L + 9
+    local isFluid = state.craftIsFluid
+    at(
+      L,
+      cur,
+      isFluid and "Amount (mB):" or "Amount:",
+      colors.lightGray,
+      colors.black
+    )
+    local xb = L + (isFluid and 14 or 9)
     local cnt = state.craftCount
 
     local function addCount(delta)
@@ -1506,25 +1870,60 @@ local function drawCraftScreen()
       end
     end
 
-    mkBtnTight(xb, cur, "-100", colors.lightGray, colors.gray, function()
-      addCount(-100)
-    end)
-    mkBtnTight(xb + 5, cur, "-10", colors.lightGray, colors.gray, function()
-      addCount(-10)
-    end)
-    mkBtnTight(xb + 9, cur, "-1", colors.lightGray, colors.gray, function()
-      addCount(-1)
-    end)
-    at(xb + 12, cur, string.format("%4d", cnt), colors.black, colors.yellow)
-    mkBtnTight(xb + 17, cur, "+1", colors.lightGray, colors.gray, function()
-      addCount(1)
-    end)
-    mkBtnTight(xb + 20, cur, "+10", colors.lightGray, colors.gray, function()
-      addCount(10)
-    end)
-    mkBtnTight(xb + 24, cur, "+100", colors.lightGray, colors.gray, function()
-      addCount(100)
-    end)
+    if isFluid then
+      mkBtnTight(xb, cur, "-1000", colors.lightGray, colors.gray, function()
+        addCount(-1000)
+      end)
+      mkBtnTight(xb + 6, cur, "-100", colors.lightGray, colors.gray, function()
+        addCount(-100)
+      end)
+      mkBtnTight(xb + 11, cur, "-10", colors.lightGray, colors.gray, function()
+        addCount(-10)
+      end)
+      mkBtnTight(xb + 15, cur, "-1", colors.lightGray, colors.gray, function()
+        addCount(-1)
+      end)
+      at(xb + 18, cur, string.format("%6d", cnt), colors.black, colors.yellow)
+      mkBtnTight(xb + 25, cur, "+1", colors.lightGray, colors.gray, function()
+        addCount(1)
+      end)
+      mkBtnTight(xb + 28, cur, "+10", colors.lightGray, colors.gray, function()
+        addCount(10)
+      end)
+      mkBtnTight(xb + 32, cur, "+100", colors.lightGray, colors.gray, function()
+        addCount(100)
+      end)
+      mkBtnTight(
+        xb + 37,
+        cur,
+        "+1000",
+        colors.lightGray,
+        colors.gray,
+        function()
+          addCount(1000)
+        end
+      )
+    else
+      mkBtnTight(xb, cur, "-100", colors.lightGray, colors.gray, function()
+        addCount(-100)
+      end)
+      mkBtnTight(xb + 5, cur, "-10", colors.lightGray, colors.gray, function()
+        addCount(-10)
+      end)
+      mkBtnTight(xb + 9, cur, "-1", colors.lightGray, colors.gray, function()
+        addCount(-1)
+      end)
+      at(xb + 12, cur, string.format("%4d", cnt), colors.black, colors.yellow)
+      mkBtnTight(xb + 17, cur, "+1", colors.lightGray, colors.gray, function()
+        addCount(1)
+      end)
+      mkBtnTight(xb + 20, cur, "+10", colors.lightGray, colors.gray, function()
+        addCount(10)
+      end)
+      mkBtnTight(xb + 24, cur, "+100", colors.lightGray, colors.gray, function()
+        addCount(100)
+      end)
+    end
 
     cur = cur + 2
   end
@@ -1538,8 +1937,9 @@ local function drawCraftScreen()
         local name = state.craftItem
         local count = state.craftCount
         local key = state.craftKey
+        local isFluid = state.craftIsFluid
         prepareCraftState(name, count)
-        pendingTask = makeCraftTask(name, count, key)
+        pendingTask = makeCraftTask(name, count, key, isFluid)
       end)
     end
 
@@ -1596,6 +1996,7 @@ local function drawCraftScreen()
           .. resolveDisplay(step.name)
           .. " x"
           .. step.remaining
+          .. (step.isFluid and "mB" or "")
         at(L, row, truncate(label, W - L), colors.lightGray, colors.black)
       end
     end
@@ -1823,6 +2224,67 @@ local function drawStockList()
     return
   end
 
+  -- Fluids view: same table, fed from labeled tanks instead of item storage.
+  if state.stockView == "fluids" then
+    local modFiltered = drawModTabs(BODY_ROW, state.stockFluids, {
+      getTab = function()
+        return state.stockFluidModTab
+      end,
+      setTab = function(t)
+        state.stockFluidModTab = t
+      end,
+      getOffset = function()
+        return state.stockFluidModTabOffset
+      end,
+      setOffset = function(o)
+        state.stockFluidModTabOffset = o
+      end,
+      resetPage = function()
+        state.stockFluidPage = 1
+      end,
+    })
+
+    local items = modFiltered
+    if state.searchQuery ~= "" then
+      local sq = state.searchQuery
+      local filtered = {}
+      for _, item in ipairs(modFiltered) do
+        if
+          matchesQuery(stripMod(item.name), sq)
+          or matchesQuery(resolveDisplay(item.name), sq)
+        then
+          table.insert(filtered, item)
+        end
+      end
+      items = filtered
+    end
+
+    drawTable({
+      topY = BODY_ROW + 1,
+      items = items,
+      page = state.stockFluidPage,
+      setPage = function(p)
+        state.stockFluidPage = p
+      end,
+      displayName = resolveDisplay,
+      rightW = 11,
+      emptyMsg = "No fluids in labeled tanks",
+      headerCount = "AMOUNT",
+      countText = function(item)
+        return fmtMb(item.count)
+      end,
+      onRefresh = reloadStockFluids,
+      beforeRefresh = {
+        label = "Items",
+        fn = function()
+          state.stockView = "items"
+          reloadStock()
+        end,
+      },
+    })
+    return
+  end
+
   local modFiltered = drawModTabs(BODY_ROW, state.stockItems, {
     getTab = function()
       return state.stockModTab
@@ -1868,6 +2330,14 @@ local function drawStockList()
     emptyMsg = "Stock is empty",
     onRefresh = reloadStock,
     onScan = startStockScan,
+    beforeRefresh = {
+      label = "Fluids",
+      fn = function()
+        state.stockView = "fluids"
+        state.stockFluidPage = 1
+        reloadStockFluids()
+      end,
+    },
   })
 end
 
@@ -2744,6 +3214,7 @@ local function drawChecklist()
         state.craftQueue = queue
         state.craftQueueIdx = 1
         state.craftKey = nil
+        state.craftIsFluid = false
         state.tab = "craft"
         prepareCraftState(queue[1].name, queue[1].count)
         pendingTask = makeCraftQueueTask(queue)
@@ -2834,6 +3305,7 @@ local function drawChecklist()
           state.craftQueue = nil
           state.craftQueueIdx = 0
           state.craftKey = nil
+          state.craftIsFluid = false
           state.tab = "craft"
           prepareCraftState(captItem.name, captItem.needed)
           pendingTask = makeCraftTask(captItem.name, captItem.needed)
@@ -2879,6 +3351,7 @@ reloadRecipes = function()
       name = recipe.name,
       displayName = recipe.displayName,
       count = recipe.count,
+      resultType = recipe.resultType,
     })
   end
   table.sort(list, function(a, b)
@@ -2897,6 +3370,35 @@ reloadStock = function()
     return stripMod(a.name) < stripMod(b.name)
   end)
   state.stockItems = list
+end
+
+reloadStockFluids = function()
+  local ok, totals = pcall(Fluids.getTotals)
+  local list = {}
+  if ok then
+    for name, mb in pairs(totals) do
+      table.insert(list, { name = name, count = mb })
+    end
+  end
+  table.sort(list, function(a, b)
+    return stripMod(a.name) < stripMod(b.name)
+  end)
+  state.stockFluids = list
+end
+
+-- Fluid ids present in labeled tanks, alphabetical: the +Fluids picker list.
+reloadFluids = function()
+  local ok, totals = pcall(Fluids.getTotals)
+  local list = {}
+  if ok then
+    for name in pairs(totals) do
+      table.insert(list, name)
+    end
+  end
+  table.sort(list, function(a, b)
+    return stripMod(a) < stripMod(b)
+  end)
+  state.availableFluids = list
 end
 
 reloadMachines = function()
