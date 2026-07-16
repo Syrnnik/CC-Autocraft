@@ -439,19 +439,32 @@ local function drawModTabs(y, items, opts)
       return prevO
     end
 
-    if needsScroll then
-      local canLeft = modOffset > 0
-      at(scrollL, y, "<", canLeft and colors.white or colors.gray, colors.black)
-      if canLeft then
-        table.insert(buttons, {
-          x1 = scrollL,
-          x2 = scrollL,
-          y = y,
-          fn = function()
-            opts.setOffset(prevPageOffset())
-          end,
-        })
+    -- Offset of the last page (the one whose window reaches the final mod),
+    -- page-aligned like every other offset used here.
+    local function lastPageOffset()
+      local o = 0
+      while calcLastVisible(o) < #mods do
+        o = calcLastVisible(o)
       end
+      return o
+    end
+
+    if needsScroll then
+      -- Wrap-around: at the start, "<" jumps to the last page instead of
+      -- doing nothing, so the end of the list is one tap away.
+      at(scrollL, y, "<", colors.white, colors.black)
+      table.insert(buttons, {
+        x1 = scrollL,
+        x2 = scrollL,
+        y = y,
+        fn = function()
+          if modOffset > 0 then
+            opts.setOffset(prevPageOffset())
+          else
+            opts.setOffset(lastPageOffset())
+          end
+        end,
+      })
     end
 
     local x = modsStart
@@ -479,18 +492,20 @@ local function drawModTabs(y, items, opts)
     end
 
     if needsScroll then
-      local canRight = lastVisibleIdx < #mods
-      at(W, y, ">", canRight and colors.white or colors.gray, colors.black)
-      if canRight then
-        table.insert(buttons, {
-          x1 = W,
-          x2 = W,
-          y = y,
-          fn = function()
+      -- Wrap-around: at the end, ">" jumps back to the start.
+      at(W, y, ">", colors.white, colors.black)
+      table.insert(buttons, {
+        x1 = W,
+        x2 = W,
+        y = y,
+        fn = function()
+          if lastVisibleIdx < #mods then
             opts.setOffset(lastVisibleIdx)
-          end,
-        })
-      end
+          else
+            opts.setOffset(0)
+          end
+        end,
+      })
     end
   end
 
