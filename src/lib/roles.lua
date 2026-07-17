@@ -7,6 +7,7 @@ Roles.LIST = {
   "stock_view",
   "stock_in",
   "stock_out",
+  "fluid_stock",
   "crafter",
   "recipe_interface",
   "monitor",
@@ -17,6 +18,7 @@ Roles.DISPLAY = {
   stock_view = "Stock View",
   stock_in = "Stock In",
   stock_out = "Stock Out",
+  fluid_stock = "Fluid Stock",
   crafter = "Crafter",
   recipe_interface = "New Recipes",
   monitor = "Monitor",
@@ -25,10 +27,12 @@ Roles.DISPLAY = {
 
 -- Roles that accept several peripherals at once. Their stored value is a
 -- list; all assigned inventories are merged into one virtual storage.
+-- fluid_stock tanks together form the fluid pool the same way.
 Roles.MULTI = {
   stock_view = true,
   stock_in = true,
   stock_out = true,
+  fluid_stock = true,
 }
 
 local path = "data/roles.json"

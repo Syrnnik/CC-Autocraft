@@ -445,14 +445,20 @@ function Crafting.craftNewMachineRecipe(
   if not failedItem and not failedFluid then
     local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
     local destSlot = Crafting.getSlotToPutItem()
+    -- Fluid-only result machines have no item inventory: skip item polling
+    -- for them instead of crashing on a missing list().
+    local resultHasItems = type(Utils.wrapPeripheral(resultProcessor).list)
+      == "function"
 
     for _ = 1, steps do
-      local listing = Utils.wrapPeripheral(resultProcessor).list()
       local resultSlot = nil
-      for s, sItem in pairs(listing) do
-        if not inputsToResult[sItem.name] then
-          resultSlot = s
-          break
+      if resultHasItems then
+        local listing = Utils.wrapPeripheral(resultProcessor).list()
+        for s, sItem in pairs(listing) do
+          if not inputsToResult[sItem.name] then
+            resultSlot = s
+            break
+          end
         end
       end
       if resultSlot then
@@ -483,8 +489,39 @@ function Crafting.craftNewMachineRecipe(
           end
         end
         crafted = { isFluid = true, name = grownFluid, count = grownBy }
-        -- Bank the produced fluid into the pool (baseline stays untouched).
-        Fluids.depositFrom(resultProcessor, grownFluid, grownBy)
+        -- Bank ALL produced fluid into the pool: keep draining whatever
+        -- sits above the pre-craft baseline until two calm polls in a row
+        -- find nothing (catches trailing production the stability window
+        -- missed). The baseline amount itself stays in the machine.
+        local banked = 0
+        local calm = 0
+        while calm < 2 do
+          local level = Fluids.tankLevels(resultProcessor)[grownFluid] or 0
+          local excess = level - (fluidBaseline[grownFluid] or 0)
+          if excess > 0 then
+            local moved =
+              Fluids.depositFrom(resultProcessor, grownFluid, excess)
+            if moved <= 0 then
+              Logger.printWarning(
+                string.format(
+                  "Fluid storage full: %dmB of '%s' left in %s",
+                  excess,
+                  grownFluid,
+                  resultProcessor
+                )
+              )
+              break
+            end
+            banked = banked + moved
+            calm = 0
+          else
+            calm = calm + 1
+            os.sleep(0.5)
+          end
+        end
+        if banked > crafted.count then
+          crafted.count = banked
+        end
         break
       end
 

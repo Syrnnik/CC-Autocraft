@@ -1,14 +1,14 @@
-local Labels = require("lib.labels")
+local Roles = require("lib.roles")
 
--- Fluid storage built on top of labeled peripherals.
+-- Fluid storage.
 --
--- A peripheral counts as a fluid tank when it is labeled (LABELS tab), is
--- currently connected, exposes the fluid_storage API (tanks/pushFluid) and is
--- NOT an item inventory. The inventory check keeps machines with internal
--- tanks (mixers, basins and the like) out of the shared pool: they are
--- processors, not storage, and draining them would steal recipe inputs.
+-- The pool is EXPLICIT: exactly the peripherals assigned to the "Fluid
+-- Stock" role on the SETUP tab (a multi-role, like the item stock roles).
+-- No guessing from labels or recipes -- a machine used for a brand-new
+-- recipe can never be mistaken for storage, and a storage controller that
+-- also exposes an item inventory works fine once assigned to the role.
 --
--- All labeled tanks together form one shared pool. Amounts are in mB.
+-- All Fluid Stock tanks together form one shared pool. Amounts are in mB.
 local Fluids = {}
 
 -- Prefix used by the planner to keep fluid amounts separate from item counts
@@ -35,23 +35,14 @@ local function hasFluidApi(port)
   return p ~= nil and type(p.tanks) == "function"
 end
 
--- True when `port` should be part of the fluid storage pool.
-function Fluids.isTank(port)
-  if not peripheral.isPresent(port) then
-    return false
-  end
-  if not hasFluidApi(port) then
-    return false
-  end
-  -- Machines expose an item inventory next to their tanks; pure tanks don't.
-  return not peripheral.hasType(port, "inventory")
-end
+Fluids.hasFluidApi = hasFluidApi
 
--- Labeled peripherals that act as fluid storage, sorted by port name.
+-- Peripherals assigned to the Fluid Stock role that are connected and
+-- fluid-capable, sorted by port name.
 function Fluids.getTankPorts()
   local ports = {}
-  for port in pairs(Labels.getAll()) do
-    if Fluids.isTank(port) then
+  for _, port in ipairs(Roles.getPorts("fluid_stock")) do
+    if peripheral.isPresent(port) and hasFluidApi(port) then
       table.insert(ports, port)
     end
   end

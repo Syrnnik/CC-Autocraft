@@ -50,9 +50,11 @@ local state = {
   resultPickerOffset = 0, -- horizontal scroll for the "Result from:" picker
   -- recipe fluids state (+Fluids section, machine recipes only)
   recipeFluids = {}, -- { name, mb, processor } added via +Fluids
-  availableFluids = {}, -- fluid ids present in labeled tanks, sorted
+  availableFluids = {}, -- fluid ids present in Fluid Stock tanks, sorted
   fluidPickerOpen = false, -- +Fluids tapped: fluid list row visible
   fluidPickerOffset = 0, -- horizontal scroll for the fluid list
+  setAllPickerOpen = false, -- "Set machine" tapped: assign one machine to all
+  setAllPickerOffset = 0, -- horizontal scroll for the set-all picker
   selectedFluidIdx = nil, -- index in recipeFluids of the expanded row
   fluidExpandMode = nil, -- "counter" (mB counter + machines) | "machines"
   fluidMachinePickerOffset = 0, -- scroll for the fluid->machine picker
@@ -114,12 +116,25 @@ local BODY_ROW = TABS_ROW + 1 -- 2  (first content row)
 local getMod = Utils.getMod
 local stripMod = Utils.stripMod
 
--- Friendly name for an item id: stored displayName if known, else the id with
--- its mod prefix stripped. Plan-space fluid names ("fluid:minecraft:lava")
--- lose their prefix first so they render like any other name.
+-- Pretty fallback for ids without a stored displayName:
+-- "create:molten_iron" -> "Molten Iron".
+local function prettifyId(name)
+  local s = stripMod(name):gsub("_", " ")
+  return (
+    s:gsub("(%a)(%w*)", function(head, tail)
+      return head:upper() .. tail
+    end)
+  )
+end
+
+-- Friendly name for an item id: stored displayName if known, else the id
+-- prettified. Plan-space fluid names ("fluid:minecraft:lava") lose their
+-- prefix first so they render like any other name. Fluids never get a real
+-- displayName (the CC fluid API doesn't report one), so they always use the
+-- prettified id -- or a manual entry in data/display_names.json.
 local function resolveDisplay(name)
   name = Fluids.stripPrefix(name)
-  return DisplayNames.get(name) or stripMod(name)
+  return DisplayNames.get(name) or prettifyId(name)
 end
 
 -- Compact mB amount for tables: "500mB", "12.5K mB", "1.2M mB".
@@ -351,27 +366,27 @@ local function drawTable(opts)
         opts.onRefresh
       )
     end
-    -- Optional extra button between Scan and Refresh (e.g. the STOCK tab's
-    -- Fluids/Items toggle).
-    if opts.beforeRefresh then
-      xAfterRefresh = xAfterRefresh - (#opts.beforeRefresh.label + 2) - 1
+    if opts.onScan then
+      xAfterRefresh = xAfterRefresh - #" Scan " - 1
       mkBtn(
         xAfterRefresh,
-        paginationY,
-        opts.beforeRefresh.label,
-        colors.black,
-        colors.cyan,
-        opts.beforeRefresh.fn
-      )
-    end
-    if opts.onScan then
-      mkBtn(
-        xAfterRefresh - #" Scan " - 1,
         paginationY,
         "Scan",
         colors.black,
         colors.orange,
         opts.onScan
+      )
+    end
+    -- Optional extra button left of Scan/Refresh (e.g. the STOCK tab's
+    -- Fluids/Items toggle).
+    if opts.beforeRefresh then
+      mkBtn(
+        xAfterRefresh - (#opts.beforeRefresh.label + 2) - 1,
+        paginationY,
+        opts.beforeRefresh.label,
+        colors.black,
+        colors.cyan,
+        opts.beforeRefresh.fn
       )
     end
   end
@@ -666,6 +681,7 @@ local function drawTabs()
           state.editTargetName = nil
           state.recipeFluids = {}
           state.fluidPickerOpen = false
+          state.setAllPickerOpen = false
           state.selectedFluidIdx = nil
           state.fluidExpandMode = nil
           reloadMachines()
@@ -790,6 +806,7 @@ local function drawRecipesList()
             state.selectedItemIdx = nil
             state.recipeFluids = {}
             state.fluidPickerOpen = false
+            state.setAllPickerOpen = false
             state.selectedFluidIdx = nil
             state.fluidExpandMode = nil
             if state.type == "machine" then
@@ -1164,9 +1181,15 @@ local function drawNewRecipe()
         if state.fluidExpandMode == "counter" then
           -- -1000 -100 -10 -1 <value>mB +1 +10 +100 +1000
           -- Tapping the value collapses the row.
+          -- Same quirk as the craft-amount counter: from the minimum, a
+          -- +10/+100/+1000 tap sets that value instead of adding to 1.
           local function addMb(delta)
             local f = state.recipeFluids[captI]
-            f.mb = math.max(1, f.mb + delta)
+            if delta > 1 and f.mb == 1 then
+              f.mb = delta
+            else
+              f.mb = math.max(1, f.mb + delta)
+            end
           end
           local xb = L + 2
           mkBtnTight(xb, cur, "-1000", colors.lightGray, colors.gray, function()
@@ -1272,13 +1295,35 @@ local function drawNewRecipe()
       end
     end
 
-    -- +Fluids: toggles a one-line list of fluids available in labeled tanks.
+    -- Action row: [Set machine] [+Fluids]. "Set machine" assigns one machine
+    -- to every recipe item and fluid at once; +Fluids toggles a one-line
+    -- list of fluids available in Fluid Stock tanks. The two pickers are
+    -- mutually exclusive.
     mkBtn(
       L,
       cur,
+      "Set machine",
+      colors.black,
+      state.setAllPickerOpen and colors.green or colors.lightGray,
+      function()
+        if state.setAllPickerOpen then
+          state.setAllPickerOpen = false
+        else
+          state.setAllPickerOpen = true
+          state.setAllPickerOffset = 0
+          state.fluidPickerOpen = false
+          state.selectedFluidIdx = nil
+          state.fluidExpandMode = nil
+          state.selectedItemIdx = nil
+        end
+      end
+    )
+    mkBtn(
+      L + #" Set machine " + 1,
+      cur,
       "+Fluids",
       colors.black,
-      state.fluidPickerOpen and colors.green or colors.lightBlue,
+      state.fluidPickerOpen and colors.green or colors.lightGray,
       function()
         if state.fluidPickerOpen then
           state.fluidPickerOpen = false
@@ -1286,12 +1331,54 @@ local function drawNewRecipe()
           reloadFluids()
           state.fluidPickerOpen = true
           state.fluidPickerOffset = 0
+          state.setAllPickerOpen = false
           state.selectedFluidIdx = nil
           state.fluidExpandMode = nil
         end
       end
     )
     cur = cur + 1
+
+    if state.setAllPickerOpen then
+      -- Highlight the machine only when every item and fluid already agrees.
+      local common = nil
+      do
+        local same = true
+        local function check(processor)
+          if not processor then
+            same = false
+          elseif common == nil then
+            common = processor
+          elseif common ~= processor then
+            same = false
+          end
+        end
+        for _, item in ipairs(state.machineItems) do
+          check(item.processor)
+        end
+        for _, fluid in ipairs(state.recipeFluids) do
+          check(fluid.processor)
+        end
+        if not same then
+          common = nil
+        end
+      end
+
+      drawMachinePager(cur, state.availableMachines, common, function()
+        return state.setAllPickerOffset
+      end, function(o)
+        state.setAllPickerOffset = o
+      end, function(mname)
+        for _, item in ipairs(state.machineItems) do
+          item.processor = mname
+        end
+        for _, fluid in ipairs(state.recipeFluids) do
+          fluid.processor = mname
+        end
+        state.setAllPickerOpen = false
+      end)
+      cur = cur + 1
+    end
 
     if state.fluidPickerOpen then
       drawMachinePager(cur, state.availableFluids, nil, function()
@@ -1307,7 +1394,7 @@ local function drawNewRecipe()
         state.selectedFluidIdx = #state.recipeFluids
         state.fluidExpandMode = "counter"
         state.fluidMachinePickerOffset = 0
-      end, "No fluids in labeled tanks", resolveDisplay)
+      end, "No fluids in Fluid Stock", resolveDisplay)
       cur = cur + 1
     end
 
@@ -1428,6 +1515,7 @@ local function drawNewRecipe()
       state.msg = nil
       state.recipeFluids = {}
       state.fluidPickerOpen = false
+      state.setAllPickerOpen = false
       state.selectedFluidIdx = nil
       state.fluidExpandMode = nil
       reloadRecipes()
@@ -1521,6 +1609,7 @@ local function drawNewRecipe()
     state.pendingRecipe = nil
     state.recipeFluids = {}
     state.fluidPickerOpen = false
+    state.setAllPickerOpen = false
     state.selectedFluidIdx = nil
     state.fluidExpandMode = nil
     pendingTask = function()
@@ -2268,7 +2357,7 @@ local function drawStockList()
       end,
       displayName = resolveDisplay,
       rightW = 11,
-      emptyMsg = "No fluids in labeled tanks",
+      emptyMsg = "No fluids in Fluid Stock",
       headerCount = "AMOUNT",
       countText = function(item)
         return fmtMb(item.count)
@@ -2607,6 +2696,11 @@ local ROLE_NEEDS_INVENTORY = {
   stock_out = true,
 }
 
+-- Roles whose picker offers only fluid-capable peripherals.
+local ROLE_NEEDS_FLUID = {
+  fluid_stock = true,
+}
+
 -- Applies a setting value: persists it via Config.set and re-applies side
 -- effects that normally only happen at startup (monitor text scale).
 local function applySetting(key, value)
@@ -2649,6 +2743,7 @@ local function buildRoleBlocks()
   -- stale ports can't be type-checked while absent, so they stay listed.
   local pickerPorts = {}
   local invPickerPorts = {}
+  local fluidPickerPorts = {}
   for _, item in ipairs(state.labelItems) do
     if item.label ~= "" then
       table.insert(pickerPorts, item.name)
@@ -2657,6 +2752,9 @@ local function buildRoleBlocks()
         or peripheral.hasType(item.name, "inventory")
       then
         table.insert(invPickerPorts, item.name)
+      end
+      if item.connected == false or Fluids.hasFluidApi(item.name) then
+        table.insert(fluidPickerPorts, item.name)
       end
     end
   end
@@ -2671,6 +2769,7 @@ local function buildRoleBlocks()
   end
   table.sort(pickerPorts, byLabel)
   table.sort(invPickerPorts, byLabel)
+  table.sort(fluidPickerPorts, byLabel)
 
   -- Draws one assigned value as "label (port)" at xValue on row y.
   local function drawValue(y, value)
@@ -2702,6 +2801,7 @@ local function buildRoleBlocks()
     local isMulti = Roles.MULTI[role] == true
     local pickerOpen = state.setupPickerRole == role
     local rolePorts = ROLE_NEEDS_INVENTORY[role] and invPickerPorts
+      or ROLE_NEEDS_FLUID[role] and fluidPickerPorts
       or pickerPorts
     local captRole = role
 
@@ -3027,43 +3127,27 @@ local function drawSetup()
     end)
   end
 
-  local subTabs = {
-    { id = "roles", label = " System Roles " },
-    { id = "settings", label = " Settings " },
-  }
-  local tabsW = 0
-  for i, tab in ipairs(subTabs) do
-    tabsW = tabsW + #tab.label + (i > 1 and 1 or 0)
-  end
-  local x = W - tabsW + 1
-  for _, tab in ipairs(subTabs) do
-    local active = state.setupTab == tab.id
-    local captId = tab.id
-    at(
-      x,
-      H,
-      tab.label,
-      active and colors.black or colors.gray,
-      active and colors.orange or colors.yellow
-    )
-    table.insert(buttons, {
-      x1 = x,
-      x2 = x + #tab.label - 1,
-      y = H,
-      fn = function()
-        if state.setupTab ~= captId then
-          state.setupTab = captId
-          state.setupPage = 1
-          state.setupPickerRole = nil
-          state.setupCustomMode = false
-          state.setupCustomInput = ""
-          state.settingEditKey = nil
-          state.settingBoolKey = nil
-        end
-      end,
-    })
-    x = x + #tab.label + 1
-  end
+  -- Sub-tab switcher, styled like the STOCK Fluids/Items toggle: only the
+  -- OTHER sub-tab is shown (on System Roles you see "Settings" and vice
+  -- versa) and tapping it switches over.
+  local otherLabel = state.setupTab == "settings" and "System Roles"
+    or "Settings"
+  mkBtn(
+    W - (#otherLabel + 2) + 1,
+    H,
+    otherLabel,
+    colors.black,
+    colors.cyan,
+    function()
+      state.setupTab = state.setupTab == "settings" and "roles" or "settings"
+      state.setupPage = 1
+      state.setupPickerRole = nil
+      state.setupCustomMode = false
+      state.setupCustomInput = ""
+      state.settingEditKey = nil
+      state.settingBoolKey = nil
+    end
+  )
 end
 
 -- ── Checklist tab ──────────────────────────────────────────
@@ -3361,6 +3445,9 @@ reloadRecipes = function()
 end
 
 reloadStock = function()
+  -- Top up display names for items that appeared since the last look, so
+  -- the STOCK table shows friendly names without a manual LABELS > Scan.
+  pcall(Stock.fillMissingDisplayNames)
   local totals = Stock.getTotals()
   local list = {}
   for name, count in pairs(totals) do
@@ -3386,7 +3473,7 @@ reloadStockFluids = function()
   state.stockFluids = list
 end
 
--- Fluid ids present in labeled tanks, alphabetical: the +Fluids picker list.
+-- Fluid ids present in Fluid Stock tanks, alphabetical (+Fluids picker).
 reloadFluids = function()
   local ok, totals = pcall(Fluids.getTotals)
   local list = {}
@@ -3410,6 +3497,9 @@ reloadMachines = function()
   end
   -- Only offer machines the user has actually named on the Labels tab; an
   -- unlabelled inventory is just noise in the picker (can't be identified).
+  -- Fluid-only peripherals (tanks() but no item slots) count too, so purely
+  -- fluid machines can be picked as processors or "Result from". Fluid
+  -- Stock tanks don't show up: like every role port they land in `known`.
   local labels = Labels.getAll()
   local machines = {}
   for _, name in ipairs(peripheral.getNames()) do
@@ -3417,7 +3507,7 @@ reloadMachines = function()
       not known[name]
       and labels[name]
       and name:find(":", 1, true)
-      and peripheral.hasType(name, "inventory")
+      and (peripheral.hasType(name, "inventory") or Fluids.hasFluidApi(name))
     then
       table.insert(machines, name)
     end

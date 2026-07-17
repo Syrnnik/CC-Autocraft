@@ -456,6 +456,39 @@ local function runParallelBatched(tasks, batch)
   end
 end
 
+-- Resolves display names for stock items that don't have one stored yet.
+-- Cheap on repeat calls: only ids missing from the DisplayNames store
+-- trigger a getItemDetail, so after the first look at any new item the
+-- store is warm and this is a no-op.
+function Stock.fillMissingDisplayNames()
+  local view = getStockView()
+  if not view then
+    return
+  end
+
+  local known = DisplayNames.getAll()
+  local firstSlot = {}
+  for slot, item in pairs(listItems(view)) do
+    if known[item.name] == nil and firstSlot[item.name] == nil then
+      firstSlot[item.name] = slot
+    end
+  end
+
+  local found = {}
+  local tasks = {}
+  for name, slot in pairs(firstSlot) do
+    tasks[#tasks + 1] = function()
+      local detail = getItemDetail(view, slot)
+      if detail and detail.displayName then
+        found[name] = detail.displayName
+      end
+    end
+  end
+  runParallelBatched(tasks)
+
+  DisplayNames.setMany(found)
+end
+
 -- Groups occupied slots by item identity: name + displayName. Same id with
 -- different display names (e.g. three conduit types sharing one item id) are
 -- different items and must not be merged; same display name with different
