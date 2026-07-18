@@ -132,6 +132,20 @@ local function pushRecipeFluids(recipe, batchSize, resolvePort)
   return cycles
 end
 
+-- Errors worth retrying: transfer glitches and timeouts can come from a
+-- transient state (another step holding slots, a machine mid-operation, a
+-- momentarily full buffer). Shortages, missing config and unknown recipes
+-- are final -- retrying cannot fix them.
+local function isTransientError(err)
+  local msg = tostring(err)
+  return msg:find("timed out", 1, true) ~= nil
+    or msg:find("Failed to push", 1, true) ~= nil
+    or msg:find("Failed to pull", 1, true) ~= nil
+    or msg:find("Failed to move fluid", 1, true) ~= nil
+    or msg:find("did not respond", 1, true) ~= nil
+    or msg:find("Fluid storage full", 1, true) ~= nil
+end
+
 -- Returns leftover input fluids from every fluid processor back to the pool
 -- (used after a cycle or a failed/timed-out craft).
 local function reclaimRecipeFluids(recipe, resolvePort)
@@ -702,6 +716,9 @@ end
 -- machine tank never stalls a big batch). `baseline` is the amount of the
 -- result fluid already in the machine before inputs were pushed: it stays
 -- untouched, only growth above it counts as output.
+-- Returns the number of cycles actually completed: a machine that stalls
+-- AFTER partial progress just ends the batch early (the caller re-pushes
+-- the remainder); only zero progress in a full timeout window is an error.
 local function collectFluidResult(
   recipe,
   batchSize,
@@ -726,23 +743,27 @@ local function collectFluidResult(
         if moved > 0 then
           break
         end
-        -- The fluid is sitting in the machine but no pool tank accepts it.
-        Logger.raiseError(
-          string.format(
-            "Fluid storage full: could not deposit %dmB of '%s' (got %d/%dmB)",
-            drainable,
-            fluidName,
-            produced,
-            totalNeeded
-          )
-        )
+        -- The fluid is sitting in the machine but no pool tank accepts
+        -- it right now; keep waiting instead of failing outright.
       end
       os.sleep(0.5)
     end
     if moved == 0 then
+      if cyclesDone > 0 then
+        Logger.printWarning(
+          string.format(
+            "Machine stalled after %d/%d cycles of '%s'; re-running the rest",
+            cyclesDone,
+            batchSize,
+            fluidName
+          )
+        )
+        return cyclesDone
+      end
       Logger.raiseError(
         string.format(
-          "Machine craft timed out: got %d/%dmB of '%s' from %s",
+          "Machine craft timed out: got %d/%dmB of '%s' from %s"
+            .. " (fluid storage full or machine stuck?)",
           produced,
           totalNeeded,
           fluidName,
@@ -762,6 +783,8 @@ local function collectFluidResult(
       end
     end
   end
+
+  return batchSize
 end
 
 -- Body of one machine craft cycle; assumes the involved machines are already
@@ -841,10 +864,15 @@ function Crafting.runMachineCycle(
     error(errPush, 0)
   end
 
-  local okCollect, errCollect = pcall(function()
+  local okCollect, collectResult = pcall(function()
     if isFluidResult then
-      collectFluidResult(recipe, cycles, onEach, resultPort, fluidBaseline)
-      return
+      return collectFluidResult(
+        recipe,
+        cycles,
+        onEach,
+        resultPort,
+        fluidBaseline
+      )
     end
 
     -- Collect results until we have cycles * recipe.count items.
@@ -856,7 +884,7 @@ function Crafting.runMachineCycle(
     local cyclesDone = 0
 
     while itemsPulled < totalNeeded do
-      local found = false
+      local progressed = false
       for _ = 1, steps do
         local listing = Utils.wrapPeripheral(resultPort).list()
         local resultSlot = nil
@@ -868,24 +896,39 @@ function Crafting.runMachineCycle(
         end
         if resultSlot then
           local n = stockOut.pullItems(resultPort, resultSlot)
-          itemsPulled = itemsPulled + n
-          local newCycles = math.floor(itemsPulled / (recipe.count or 1))
-            - cyclesDone
-          cyclesDone = cyclesDone + newCycles
-          for _ = 1, newCycles do
-            if onEach then
-              onEach(1)
+          if n > 0 then
+            itemsPulled = itemsPulled + n
+            local newCycles = math.floor(itemsPulled / (recipe.count or 1))
+              - cyclesDone
+            cyclesDone = cyclesDone + newCycles
+            for _ = 1, newCycles do
+              if onEach then
+                onEach(1)
+              end
             end
+            progressed = true
+            break
           end
-          found = true
-          break
+          -- A slot we can't extract from (stock full, or the machine
+          -- exposes a non-output slot): wait instead of spinning.
         end
         os.sleep(0.5)
       end
-      if not found then
+      if not progressed then
+        if cyclesDone > 0 then
+          Logger.printWarning(
+            string.format(
+              "Machine stalled after %d/%d cycles; re-running the rest",
+              cyclesDone,
+              cycles
+            )
+          )
+          return cyclesDone
+        end
         Logger.raiseError(
           string.format(
-            "Machine craft timed out: got %d/%d items from %s",
+            "Machine craft timed out: got %d/%d items from %s"
+              .. " (stock full or machine stuck?)",
             itemsPulled,
             totalNeeded,
             resultPort
@@ -893,6 +936,8 @@ function Crafting.runMachineCycle(
         )
       end
     end
+
+    return cycles
   end)
 
   -- Always clear all machines (success or timeout); one concurrent task per
@@ -914,10 +959,12 @@ function Crafting.runMachineCycle(
   reclaimRecipeFluids(recipe, resolveItemPort)
 
   if not okCollect then
-    error(errCollect, 0)
+    error(collectResult, 0)
   end
 
-  return cycles
+  -- Cycles actually completed (collection may have ended a stalled batch
+  -- early); never below 1 so callers always make progress.
+  return math.max(1, collectResult or cycles)
 end
 
 -- Pull all items from the crafter back to the recipe interface
@@ -1150,25 +1197,24 @@ function Crafting.craftItem(
     error(Crafting.formatMissing(missing), 0)
   end
 
-  -- Count total individual craft runs for per-item progress tracking.
-  -- Machine steps contribute craftsCount runs; crafter steps contribute
-  -- ceil(craftsCount / maxBatch) chunks (one progress tick per chunk).
+  -- Progress is tracked in recipe CYCLES (one machine cycle / one crafted
+  -- grid), not chunks: streaming splits batches unpredictably, and cycle
+  -- counts stay stable no matter how a batch gets fragmented.
   local totalRuns = 0
   for _, step in ipairs(plan) do
-    if (step.recipe.type or "crafter") == "machine" then
-      totalRuns = totalRuns + step.craftsCount
-    else
-      local maxBatch = Stock.getMaxBatchForRecipe(step.recipe)
-      totalRuns = totalRuns + math.ceil(step.craftsCount / maxBatch)
-    end
+    totalRuns = totalRuns + step.craftsCount
   end
 
-  -- ── Pipelined execution ─────────────────────────────────────
-  -- Every plan step runs as a coroutine and starts once all earlier steps
-  -- that produce one of its ingredients have finished. Peripheral safety
-  -- comes from the stock/machine locks above. UI callbacks may draw on a
-  -- monitor (peripheral calls yield), so they are serialised to keep two
-  -- steps from interleaving a redraw.
+  -- ── Pipelined + streaming execution ─────────────────────────
+  -- Every plan step runs as a coroutine. A step does NOT wait for its
+  -- producers to finish their whole batch: it polls the stock and crafts
+  -- whatever number of cycles the current stock can supply (a Duratium
+  -- ingot starts as soon as the first Netherite ingot lands in storage).
+  -- Once every producer is finished, the remainder is crafted in one go so
+  -- a genuine shortage raises its truthful error instead of spinning.
+  -- Peripheral safety comes from the stock/machine locks above. UI
+  -- callbacks may draw on a monitor (peripheral calls yield), so they are
+  -- serialised to keep two steps from interleaving a redraw.
   local doneRuns = 0
   local doneSteps = {}
   local failed = nil
@@ -1204,48 +1250,80 @@ function Crafting.craftItem(
     end
 
     runners[i] = function()
-      -- Wait for producers; bail out early if another step failed.
-      while true do
+      local remaining = step.craftsCount
+      local transientRetries = 0
+      local onEach = function(craftsDone)
+        notify(function()
+          doneRuns = doneRuns + (craftsDone or 1)
+          if onStep then
+            onStep(doneRuns, totalRuns, step.name, craftsDone or 1)
+          end
+        end)
+      end
+
+      while remaining > 0 do
         if failed then
           return
         end
-        local ready = true
+
+        local depsDone = true
         for _, dep in ipairs(deps) do
           if not doneSteps[dep] then
-            ready = false
+            depsDone = false
             break
           end
         end
-        if ready then
-          break
+
+        -- Producers still working: craft only what stock affords right now.
+        -- Producers done: claim the full remainder (validation promised it;
+        -- a real shortage must surface as an error, not an endless wait).
+        local batch = remaining
+        if not depsDone then
+          local okAff, affordable =
+            pcall(Stock.getAffordableCycles, step.recipe, remaining)
+          batch = (okAff and affordable) or 0
         end
-        os.sleep(0.1)
+
+        if batch > 0 then
+          Logger.printInfo(
+            string.format(
+              "Crafting '%s' x%d/%d craft(s)..",
+              step.name,
+              batch,
+              remaining
+            )
+          )
+          local ok, err =
+            pcall(Crafting.processCraft, step.recipe, batch, onEach)
+          if ok then
+            remaining = remaining - batch
+            transientRetries = 0
+          elseif not depsDone then
+            -- A concurrent step raced us for the same stock between the
+            -- affordability check and the claim; wait and retry.
+            os.sleep(0.5)
+          elseif isTransientError(err) and transientRetries < 3 then
+            -- Transfer glitch / timeout: worth another attempt before
+            -- declaring the whole craft dead.
+            transientRetries = transientRetries + 1
+            Logger.printWarning(
+              string.format(
+                "Step '%s' hiccup (retry %d/3): %s",
+                step.name,
+                transientRetries,
+                tostring(err)
+              )
+            )
+            os.sleep(1)
+          else
+            failed = failed or err
+            return
+          end
+        else
+          os.sleep(0.5)
+        end
       end
 
-      Logger.printInfo(
-        string.format(
-          "Crafting '%s' x%d craft(s) as one batch..",
-          step.name,
-          step.craftsCount
-        )
-      )
-      local ok, err = pcall(
-        Crafting.processCraft,
-        step.recipe,
-        step.craftsCount,
-        function(craftsDone)
-          notify(function()
-            doneRuns = doneRuns + 1
-            if onStep then
-              onStep(doneRuns, totalRuns, step.name, craftsDone or 1)
-            end
-          end)
-        end
-      )
-      if not ok then
-        failed = failed or err
-        return
-      end
       doneSteps[step.name] = true
       notify(onStepDone, step.name)
     end

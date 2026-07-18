@@ -1,4 +1,5 @@
 local DisplayNames = require("lib.display_names")
+local Fluids = require("lib.fluids")
 local Logger = require("lib.logger")
 local MultiInv = require("lib.multi_inv")
 local Recipes = require("lib.recipes")
@@ -133,6 +134,51 @@ function Stock.getMissingItems(items)
   end
 
   return stockItems, missingItems
+end
+
+-- How many cycles of `recipe` the CURRENT stock (items + fluid pool) can
+-- supply, capped at wantedCycles. Variant-aware; catalysts only need to be
+-- present. Used by streaming plan execution to start a consumer step as
+-- soon as its producers have delivered enough for a partial batch.
+function Stock.getAffordableCycles(recipe, wantedCycles)
+  local stockIn = getStockIn()
+  if not stockIn then
+    return 0
+  end
+
+  local totals = {}
+  for _, item in pairs(listItems(stockIn)) do
+    totals[item.name] = (totals[item.name] or 0) + item.count
+    if item.nbt then
+      local vk = Utils.variantKey(item.name, item.nbt)
+      totals[vk] = (totals[vk] or 0) + item.count
+    end
+  end
+
+  local cycles = wantedCycles
+  for _, item in ipairs(Recipes.getRequiredItemsPlainList(recipe)) do
+    local have = totals[Utils.variantKey(item.name, item.nbt)] or 0
+    if item.catalyst then
+      if have < 1 then
+        return 0
+      end
+    else
+      cycles = math.min(cycles, math.floor(have / item.count))
+    end
+    if cycles <= 0 then
+      return 0
+    end
+  end
+
+  for _, fluid in ipairs(Recipes.getRequiredFluidsPlainList(recipe)) do
+    local have = Fluids.count(fluid.name)
+    cycles = math.min(cycles, math.floor(have / fluid.mb))
+    if cycles <= 0 then
+      return 0
+    end
+  end
+
+  return cycles
 end
 
 -- batchSize: how many times to replicate the recipe in one craft call.
