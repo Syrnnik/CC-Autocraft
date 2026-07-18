@@ -2253,10 +2253,12 @@ local function drawCraftScreen()
   )
   at(barX + 1 + inner, barRow, "]", colors.gray, colors.black)
 
-  -- Remaining time under the bar. A Plan dry run (craft not started yet)
-  -- shows "Estimated time"; a running craft shows "Time left" -- the plan
-  -- estimate at first, live actual-rate extrapolation after.
-  if state.craftEta then
+  -- Remaining time under the bar -- only when Count Time is enabled (with
+  -- it off the user asked for NO time display at all). A Plan dry run
+  -- (craft not started yet) shows "Estimated time"; a running craft shows
+  -- "Time left" -- the plan estimate at first, live actual-rate
+  -- extrapolation after.
+  if state.craftEta and Config.COUNT_CRAFT_TIME then
     local label = state.craftStartAt and "Time left: " or "Estimated time: "
     at(L, H, label .. fmtTime(state.craftEta), colors.lightGray, colors.black)
   end
