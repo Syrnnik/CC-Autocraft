@@ -132,6 +132,37 @@ local function pushRecipeFluids(recipe, batchSize, resolvePort)
   return cycles
 end
 
+-- Snapshot of a machine's item slots: [slot] = { name, count }. Empty for
+-- peripherals without an item inventory.
+local function itemLevels(port)
+  local p = Utils.wrapPeripheral(port)
+  if type(p.list) ~= "function" then
+    return {}
+  end
+  local snapshot = {}
+  for slot, item in pairs(p.list()) do
+    snapshot[slot] = { name = item.name, count = item.count }
+  end
+  return snapshot
+end
+
+-- Finds the slot holding a craft RESULT: an item that is not a known input
+-- and that appeared (or grew) relative to the pre-push baseline. The
+-- baseline keeps leftovers already sitting in the machine (tesseracts and
+-- other shared-channel peripherals expose them) from being mistaken for
+-- the result.
+local function findResultSlot(listing, baseline, inputsToResult)
+  for slot, item in pairs(listing) do
+    if not inputsToResult[item.name] then
+      local base = baseline[slot]
+      if not base or base.name ~= item.name or item.count > base.count then
+        return slot
+      end
+    end
+  end
+  return nil
+end
+
 -- Errors worth retrying: transfer glitches and timeouts can come from a
 -- transient state (another step holding slots, a machine mid-operation, a
 -- momentarily full buffer). Shortages, missing config and unknown recipes
@@ -438,9 +469,12 @@ function Crafting.craftNewMachineRecipe(
     end
   end
 
-  -- Snapshot of the result machine's tanks BEFORE any push: fluid output is
-  -- measured as growth above this baseline.
+  -- Snapshots of the result machine BEFORE any push: fluid output is
+  -- measured as growth above the tank baseline, and pre-existing items
+  -- (leftovers in tesseract-like shared inventories) are never mistaken
+  -- for the craft result.
   local fluidBaseline = Fluids.tankLevels(resultProcessor)
+  local itemBaseline = itemLevels(resultProcessor)
 
   -- Check fluid availability up front so nothing moves on a shortage.
   for _, fluid in ipairs(machineFluids) do
@@ -512,18 +546,25 @@ function Crafting.craftNewMachineRecipe(
     for _ = 1, steps do
       local resultSlot = nil
       if resultHasItems then
-        local listing = Utils.wrapPeripheral(resultProcessor).list()
-        for s, sItem in pairs(listing) do
-          if not inputsToResult[sItem.name] then
-            resultSlot = s
+        resultSlot = findResultSlot(
+          Utils.wrapPeripheral(resultProcessor).list(),
+          itemBaseline,
+          inputsToResult
+        )
+      end
+      if resultSlot then
+        -- Accept only a real transfer: a slot we can't pull from (or that
+        -- lands nothing at destSlot) keeps the poll going instead of
+        -- ending the craft with a bogus "no result".
+        local pulled =
+          interface.pullItems(resultProcessor, resultSlot, nil, destSlot)
+        if pulled > 0 then
+          local detail = interface.getItemDetail(destSlot)
+          if detail then
+            crafted = detail
             break
           end
         end
-      end
-      if resultSlot then
-        interface.pullItems(resultProcessor, resultSlot, nil, destSlot)
-        crafted = interface.getItemDetail(destSlot)
-        break
       end
 
       local grownFluid, grownBy = nil, 0
@@ -807,12 +848,15 @@ function Crafting.runMachineCycle(
   end
 
   local isFluidResult = recipe.resultType == "fluid"
-  -- Snapshot BEFORE any push: an input fluid routed into the result machine
-  -- must not be mistaken for output.
+  -- Snapshots BEFORE any push: an input fluid routed into the result
+  -- machine must not be mistaken for output, and items already sitting in
+  -- the result machine (tesseract-like shared inventories) must not be
+  -- collected as results.
   local fluidBaseline = 0
   if isFluidResult then
     fluidBaseline = Fluids.tankLevels(resultPort)[recipe.name] or 0
   end
+  local itemBaseline = itemLevels(resultPort)
 
   -- Claim stock slots (and pool fluids) and push the batch under the stock
   -- lock so a concurrent step can't claim the same resources. Fluids go
@@ -886,17 +930,17 @@ function Crafting.runMachineCycle(
     while itemsPulled < totalNeeded do
       local progressed = false
       for _ = 1, steps do
-        local listing = Utils.wrapPeripheral(resultPort).list()
-        local resultSlot = nil
-        for s, sItem in pairs(listing) do
-          if not inputsToResult[sItem.name] then
-            resultSlot = s
-            break
-          end
-        end
+        local resultSlot = findResultSlot(
+          Utils.wrapPeripheral(resultPort).list(),
+          itemBaseline,
+          inputsToResult
+        )
         if resultSlot then
           local n = stockOut.pullItems(resultPort, resultSlot)
           if n > 0 then
+            -- The stack (baseline leftovers included, if the result
+            -- stacked onto them) is gone; the slot is fresh again.
+            itemBaseline[resultSlot] = nil
             itemsPulled = itemsPulled + n
             local newCycles = math.floor(itemsPulled / (recipe.count or 1))
               - cyclesDone
