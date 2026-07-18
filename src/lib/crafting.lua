@@ -65,11 +65,22 @@ local function missingLine(name, count, displayName)
   return "- " .. display .. " x" .. count
 end
 
--- Pushes a machine recipe's fluids (scaled by batchSize) from the pool into
--- their processors. Raises a truthful error when the pool cannot cover the
--- request or a transfer under-delivers.
+-- Pushes a machine recipe's fluids for up to `batchSize` cycles, adapting
+-- to what the machines' tanks actually accept: tank capacity is not
+-- queryable through the CC fluid API, so a machine that fits fewer cycles
+-- than requested simply shrinks the batch instead of failing (the caller
+-- loops over the remainder). Returns the number of cycles the pushed
+-- fluids cover; raises when even one cycle cannot be supplied.
 local function pushRecipeFluids(recipe, batchSize, resolvePort)
-  for _, fluid in ipairs(recipe.fluids or {}) do
+  local fluids = recipe.fluids or {}
+  if #fluids == 0 then
+    return batchSize
+  end
+
+  -- Pool availability first: nothing moves if some fluid can't cover even
+  -- one cycle.
+  local cycles = batchSize
+  for _, fluid in ipairs(fluids) do
     if not fluid.processor then
       Logger.raiseError(
         string.format(
@@ -78,27 +89,33 @@ local function pushRecipeFluids(recipe, batchSize, resolvePort)
         )
       )
     end
-    local need = fluid.mb * batchSize
     local have = Fluids.count(fluid.name)
-    if have < need then
+    local afford = math.floor(have / fluid.mb)
+    if afford < 1 then
       Logger.raiseError(
         string.format(
           "Not enough fluid '%s': need %dmB, have %dmB",
           fluid.name,
-          need,
+          fluid.mb,
           have
         )
       )
     end
+    cycles = math.min(cycles, afford)
+  end
+
+  -- Physical push. Partial acceptance (machine tank smaller than the
+  -- batch) shrinks the cycle count to what every fluid covers; leftover
+  -- over-supplied fluid is reclaimed at the end of the machine cycle.
+  for _, fluid in ipairs(fluids) do
     local port = resolvePort(fluid.processor)
+    local want = fluid.mb * cycles
     Logger.printInfo(
-      string.format("Pushing %dmB of '%s' to '%s'", need, fluid.name, port)
+      string.format("Pushing %dmB of '%s' to '%s'", want, fluid.name, port)
     )
-    local moved = Fluids.extractTo(port, fluid.name, need)
-    if moved < need then
-      -- Return what did move so a failed step doesn't strand fluid in the
-      -- machine, then report the real shortfall.
-      Fluids.depositFrom(port, fluid.name, moved)
+    local moved = Fluids.extractTo(port, fluid.name, want)
+    local accepted = math.floor(moved / fluid.mb)
+    if accepted < 1 then
       Logger.raiseError(
         string.format(
           "Failed to move fluid '%s' to '%s': moved %d/%dmB"
@@ -106,11 +123,13 @@ local function pushRecipeFluids(recipe, batchSize, resolvePort)
           fluid.name,
           port,
           moved,
-          need
+          fluid.mb
         )
       )
     end
+    cycles = math.min(cycles, accepted)
   end
+  return cycles
 end
 
 -- Returns leftover input fluids from every fluid processor back to the pool
@@ -656,8 +675,9 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
   end
   lockMachines(lockPorts)
 
+  local ranCycles
   local okBody, errBody = pcall(function()
-    Crafting.runMachineCycle(
+    ranCycles = Crafting.runMachineCycle(
       recipe,
       batchSize,
       onEach,
@@ -672,6 +692,9 @@ function Crafting.craftMachine(recipe, batchSize, onEach)
   if not okBody then
     error(errBody, 0)
   end
+  -- Cycles actually run: may be fewer than batchSize when the machine's
+  -- fluid tank fits less than the requested batch.
+  return ranCycles or batchSize
 end
 
 -- Waits for a fluid-result machine recipe to produce its fluid, draining the
@@ -768,13 +791,17 @@ function Crafting.runMachineCycle(
     fluidBaseline = Fluids.tankLevels(resultPort)[recipe.name] or 0
   end
 
-  -- Claim stock slots (and pool fluids) and push the full batch under the
-  -- stock lock so a concurrent step can't claim the same resources.
+  -- Claim stock slots (and pool fluids) and push the batch under the stock
+  -- lock so a concurrent step can't claim the same resources. Fluids go
+  -- first because the machines' tank acceptance DEFINES the cycle count
+  -- (may come back smaller than batchSize); items are then claimed for
+  -- exactly that many cycles. An item shortage after the fluid push is
+  -- fine: the error path below reclaims the fluid.
+  local cycles = batchSize
   lockStock()
   local okPush, errPush = pcall(function()
-    -- Claim items first: getItemsForMachineRecipe raises on shortage before
-    -- anything moves, so a missing item can't strand fluid in a machine.
-    local pushList = Stock.getItemsForMachineRecipe(recipe, batchSize)
+    cycles = pushRecipeFluids(recipe, batchSize, resolveItemPort)
+    local pushList = Stock.getItemsForMachineRecipe(recipe, cycles)
     for _, item in pairs(pushList) do
       if not item.processor then
         Logger.raiseError(
@@ -782,7 +809,6 @@ function Crafting.runMachineCycle(
         )
       end
     end
-    pushRecipeFluids(recipe, batchSize, resolveItemPort)
     local failedItem, failedPort
     local pushTasks = {}
     for _, item in pairs(pushList) do
@@ -817,15 +843,15 @@ function Crafting.runMachineCycle(
 
   local okCollect, errCollect = pcall(function()
     if isFluidResult then
-      collectFluidResult(recipe, batchSize, onEach, resultPort, fluidBaseline)
+      collectFluidResult(recipe, cycles, onEach, resultPort, fluidBaseline)
       return
     end
 
-    -- Collect results until we have batchSize * recipe.count items.
+    -- Collect results until we have cycles * recipe.count items.
     -- Multiple cycles may stack into one slot if the machine is fast, so we
     -- count items pulled (not slot pulls) to track progress correctly.
     local steps = math.ceil(Config.MACHINE_CRAFT_TIMEOUT / 0.5)
-    local totalNeeded = batchSize * (recipe.count or 1)
+    local totalNeeded = cycles * (recipe.count or 1)
     local itemsPulled = 0
     local cyclesDone = 0
 
@@ -890,6 +916,8 @@ function Crafting.runMachineCycle(
   if not okCollect then
     error(errCollect, 0)
   end
+
+  return cycles
 end
 
 -- Pull all items from the crafter back to the recipe interface
@@ -1011,11 +1039,13 @@ function Crafting.processCraft(recipe, batchSize, onEach)
     while done < batchSize do
       local chunk = math.min(maxMachineBatch, batchSize - done)
       local startedAt = os.epoch("utc")
-      Crafting.craftMachine(recipe, chunk, onEach)
+      -- The machine may accept fewer cycles than requested (its fluid tank
+      -- caps the batch); advance by what actually ran and loop the rest.
+      local ranCycles = Crafting.craftMachine(recipe, chunk, onEach) or chunk
       -- avgTime unit is one machine cycle (= one progress run).
-      local perCycle = (os.epoch("utc") - startedAt) / 1000 / chunk
+      local perCycle = (os.epoch("utc") - startedAt) / 1000 / ranCycles
       pcall(Recipes.updateAvgTime, recipe, perCycle)
-      done = done + chunk
+      done = done + ranCycles
     end
   else
     -- The crafter and the stock claim+push cycle stay exclusive for the
