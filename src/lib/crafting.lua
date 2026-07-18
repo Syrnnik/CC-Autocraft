@@ -1198,9 +1198,27 @@ function Crafting.processCraft(recipe, batchSize, onEach)
         while done < batchSize do
           local chunk = math.min(maxBatch, batchSize - done)
           local startedAt = Config.COUNT_CRAFT_TIME and os.epoch("utc") or nil
+          -- Debug phase timing: shows where a chunk's wall time goes
+          -- (claim = stock listing+assignment, craft = push+turtle
+          -- roundtrip, collect = pulling results back).
+          local d0 = Config.IS_DEBUG_MODE and os.epoch("utc") or nil
           local stockItems = Stock.getItemsForRecipe(recipe, chunk)
+          local d1 = d0 and os.epoch("utc")
           Crafting.craft(stockItems, stockIn)
+          local d2 = d0 and os.epoch("utc")
           Crafting.getCraftedItem(stockOut, false, catalystSlots)
+          if d0 then
+            local d3 = os.epoch("utc")
+            Logger.printDebug(
+              string.format(
+                "chunk x%d: claim %dms, craft %dms, collect %dms",
+                chunk,
+                d1 - d0,
+                d2 - d1,
+                d3 - d2
+              )
+            )
+          end
           if startedAt then
             -- avgTime unit is one crafter chunk (= one progress run);
             -- chunk size barely affects duration (grid fill is parallel).
