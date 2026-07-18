@@ -29,15 +29,32 @@ function MultiInv.wrap(ports)
   local members = {}
   for i, port in ipairs(ports) do
     local p = Utils.wrapPeripheral(port)
-    if not p.size then
-      error(
-        "Peripheral '"
-          .. port
-          .. "' has no size(); cannot join a multi-inventory",
-        0
-      )
+    local size
+    if p.size then
+      size = p.size()
+    else
+      -- Listing-only peripherals (custom stock views with
+      -- stock()/getStockItemDetail but no size(), e.g. a Create stock
+      -- ticker) join with a synthetic slot space spanning their current
+      -- listing, so they can merge into the view instead of breaking it.
+      local lister = p.stock or p.list
+      if not lister then
+        error(
+          "Peripheral '"
+            .. port
+            .. "' has no size()/list()/stock(); cannot join a"
+            .. " multi-inventory",
+          0
+        )
+      end
+      size = 0
+      for slot in pairs(lister() or {}) do
+        if type(slot) == "number" and slot > size then
+          size = slot
+        end
+      end
     end
-    members[i] = { port = port, p = p, size = p.size() }
+    members[i] = { port = port, p = p, size = size }
   end
 
   local inv = {}
@@ -96,9 +113,12 @@ function MultiInv.wrap(ports)
     return m.p.getItemDetail(s)
   end
 
+  -- Members without pushItems/pullItems (listing-only peripherals) simply
+  -- move nothing: transfers skip them the same way a full or drained
+  -- member is skipped.
   function inv.pushItems(toName, fromSlot, limit, toSlot)
     local m, s = resolve(fromSlot)
-    if not m then
+    if not m or not m.p.pushItems then
       return 0
     end
     if toName == inv.virtualName then
@@ -116,7 +136,7 @@ function MultiInv.wrap(ports)
   function inv.pullItems(fromName, fromSlot, limit, toSlot)
     if toSlot then
       local m, s = resolve(toSlot)
-      if not m then
+      if not m or not m.p.pullItems then
         return 0
       end
       return m.p.pullItems(fromName, fromSlot, limit, s)
@@ -130,7 +150,9 @@ function MultiInv.wrap(ports)
       if remaining and remaining <= 0 then
         break
       end
-      moved = moved + m.p.pullItems(fromName, fromSlot, remaining)
+      if m.p.pullItems then
+        moved = moved + m.p.pullItems(fromName, fromSlot, remaining)
+      end
     end
     return moved
   end

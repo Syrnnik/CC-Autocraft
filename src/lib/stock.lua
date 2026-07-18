@@ -19,9 +19,11 @@ end
 
 local function getStockView()
   -- pcall keeps the old graceful behavior: an unset role or a disconnected
-  -- port yields nil (empty stock) instead of an error.
+  -- port yields nil (empty stock) instead of an error -- but the reason is
+  -- logged, so a broken merged view doesn't just look like an empty stock.
   local ok, inv = pcall(MultiInv.forRole, "stock_view")
   if not ok then
+    Logger.printWarning("Stock View unavailable: " .. tostring(inv))
     return nil
   end
   return inv
