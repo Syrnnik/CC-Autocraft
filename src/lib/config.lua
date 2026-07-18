@@ -13,6 +13,10 @@ Config.MONITOR_TEXT_SCALE = 1.0
 Config.CRAFT_TIMEOUT = 30
 Config.MACHINE_CRAFT_TIMEOUT = 30
 
+-- Measure craft durations (recipe avgTime) and show plan time estimates.
+-- Off by default: the measuring/persisting path costs performance.
+Config.COUNT_CRAFT_TIME = false
+
 Config.PATTERN_SIZE = 3
 Config.CRAFTER_ROW_SIZE = 4
 Config.NEW_RECIPE_INTERFACE_ROW_SIZE = 9
@@ -52,6 +56,7 @@ Config.EDITABLE = {
   { key = "MONITOR_TEXT_SCALE", label = "Text Scale", type = "number" },
   { key = "CRAFT_TIMEOUT", label = "Craft Timeout", type = "number" },
   { key = "MACHINE_CRAFT_TIMEOUT", label = "Machine Timeout", type = "number" },
+  { key = "COUNT_CRAFT_TIME", label = "Count Time", type = "boolean" },
   { key = "PATTERN_SIZE", label = "Pattern Size", type = "number" },
   { key = "CRAFTER_ROW_SIZE", label = "Crafter Rows", type = "number" },
   {

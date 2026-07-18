@@ -1898,9 +1898,13 @@ local function makeCraftTask(name, count, key, isFluid)
       function(plan)
         state.craftPlan = makePlanView(plan)
         state.craftPlanning = false
-        local okEst, est = pcall(Planner.estimateTime, plan)
-        if okEst then
-          state.craftEta = est
+        -- Initial estimate only when Count Time is on; the live
+        -- actual-rate ETA below works either way (it is free).
+        if Config.COUNT_CRAFT_TIME then
+          local okEst, est = pcall(Planner.estimateTime, plan)
+          if okEst then
+            state.craftEta = est
+          end
         end
         if redraw then
           redraw()
@@ -1964,9 +1968,11 @@ local function makeCraftQueueTask(queue)
         function(plan)
           state.craftPlan = makePlanView(plan)
           state.craftPlanning = false
-          local okEst, est = pcall(Planner.estimateTime, plan)
-          if okEst then
-            state.craftEta = est
+          if Config.COUNT_CRAFT_TIME then
+            local okEst, est = pcall(Planner.estimateTime, plan)
+            if okEst then
+              state.craftEta = est
+            end
           end
           if redraw then
             redraw()

@@ -1129,13 +1129,15 @@ function Crafting.processCraft(recipe, batchSize, onEach)
     local done = 0
     while done < batchSize do
       local chunk = math.min(maxMachineBatch, batchSize - done)
-      local startedAt = os.epoch("utc")
+      local startedAt = Config.COUNT_CRAFT_TIME and os.epoch("utc") or nil
       -- The machine may accept fewer cycles than requested (its fluid tank
       -- caps the batch); advance by what actually ran and loop the rest.
       local ranCycles = Crafting.craftMachine(recipe, chunk, onEach) or chunk
-      -- avgTime unit is one machine cycle (= one progress run).
-      local perCycle = (os.epoch("utc") - startedAt) / 1000 / ranCycles
-      pcall(Recipes.updateAvgTime, recipe, perCycle)
+      if startedAt then
+        -- avgTime unit is one machine cycle (= one progress run).
+        local perCycle = (os.epoch("utc") - startedAt) / 1000 / ranCycles
+        pcall(Recipes.updateAvgTime, recipe, perCycle)
+      end
       done = done + ranCycles
     end
   else
@@ -1172,14 +1174,16 @@ function Crafting.processCraft(recipe, batchSize, onEach)
       local ok, err = pcall(function()
         while done < batchSize do
           local chunk = math.min(maxBatch, batchSize - done)
-          local startedAt = os.epoch("utc")
+          local startedAt = Config.COUNT_CRAFT_TIME and os.epoch("utc") or nil
           local stockItems = Stock.getItemsForRecipe(recipe, chunk)
           Crafting.craft(stockItems, stockIn)
           Crafting.getCraftedItem(stockOut, false, catalystSlots)
-          -- avgTime unit is one crafter chunk (= one progress run); chunk
-          -- size barely affects duration (grid fill is parallel).
-          local perRun = (os.epoch("utc") - startedAt) / 1000
-          pcall(Recipes.updateAvgTime, recipe, perRun)
+          if startedAt then
+            -- avgTime unit is one crafter chunk (= one progress run);
+            -- chunk size barely affects duration (grid fill is parallel).
+            local perRun = (os.epoch("utc") - startedAt) / 1000
+            pcall(Recipes.updateAvgTime, recipe, perRun)
+          end
           done = done + chunk
           if onEach then
             onEach(chunk)
@@ -1448,7 +1452,8 @@ end
 
 -- Dry run for the Plan button: builds the plan, validates it against the
 -- current stock and estimates the duration -- without crafting anything.
--- Returns plan, missing (list), estimateSeconds. Raises when no recipe.
+-- Returns plan, missing (list), estimateSeconds (nil when Count Time is
+-- off). Raises when no recipe.
 function Crafting.previewCraft(recipeName, count, rootRecipe)
   local totals, maxDmg = mergedTotals()
   local plan = Planner.buildCraftPlan(recipeName, count, totals, rootRecipe)
@@ -1456,7 +1461,10 @@ function Crafting.previewCraft(recipeName, count, rootRecipe)
     Logger.raiseError(string.format("No recipe found for '%s'", recipeName))
   end
   local missing = Planner.validatePlan(plan, totals, maxDmg)
-  local estimate = Planner.estimateTime(plan)
+  local estimate = nil
+  if Config.COUNT_CRAFT_TIME then
+    estimate = Planner.estimateTime(plan)
+  end
   return plan, missing, estimate
 end
 
