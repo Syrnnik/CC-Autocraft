@@ -39,6 +39,27 @@ local function getStockIn()
   return (MultiInv.forRole("stock_in"))
 end
 
+-- Same-id NBT variants (e.g. Avaritia singularities all share one item id):
+-- a recipe item recorded with an nbt hash only accepts stock slots holding
+-- that exact variant; items without nbt keep the old name-only matching.
+local function slotMatchesVariant(entry, recipeItem)
+  if recipeItem.nbt then
+    return entry.nbt == recipeItem.nbt
+  end
+  return true
+end
+
+-- Human label for shortage messages: the variant's display name when known
+-- ("Fortron Infused Singularity"), else the id (plus a variant marker so
+-- two same-id variants are still distinguishable).
+local function ingredientLabel(recipeItem)
+  local label = Utils.friendlyName(recipeItem.displayName, recipeItem.name)
+  if recipeItem.nbt and not recipeItem.displayName then
+    label = label .. " (variant)"
+  end
+  return label
+end
+
 function Stock.getMissingItems(items)
   local view = getStockView()
   if not view then
@@ -48,7 +69,9 @@ function Stock.getMissingItems(items)
     end
     return {}, missing
   end
-  -- Sum totals across all stock slots (handles split stacks)
+  -- Sum totals across all stock slots (handles split stacks). Variant items
+  -- are ALSO counted under their "name\0nbt" key so a request for a
+  -- specific variant checks that variant's amount, not the id total.
   local stockTotals = {}
   local stockFirstSlot = {}
   for slot, stockItem in pairs(listItems(view)) do
@@ -57,44 +80,55 @@ function Stock.getMissingItems(items)
     if not stockFirstSlot[name] then
       stockFirstSlot[name] = slot
     end
+    if stockItem.nbt then
+      local vk = Utils.variantKey(name, stockItem.nbt)
+      stockTotals[vk] = (stockTotals[vk] or 0) + stockItem.count
+      if not stockFirstSlot[vk] then
+        stockFirstSlot[vk] = slot
+      end
+    end
   end
 
   local stockItems = {}
   local missingItems = {}
 
   for _, item in pairs(items) do
-    local name = item.name
+    local key = Utils.variantKey(item.name, item.nbt)
+    local label = ingredientLabel(item)
     local needed = item.count
-    local available = stockTotals[name] or 0
+    local available = stockTotals[key] or 0
 
     if available >= needed then
       Logger.printDebug(
         string.format(
           "Stock has '%s' x%d (x%d required)",
-          name,
+          label,
           available,
           needed
         )
       )
       table.insert(stockItems, {
-        name = name,
+        name = item.name,
         count = needed,
-        slot = stockFirstSlot[name],
+        slot = stockFirstSlot[key],
       })
     else
       if available == 0 then
-        Logger.printError(string.format("Stock has no '%s'", name))
+        Logger.printError(string.format("Stock has no '%s'", label))
       else
         Logger.printError(
           string.format(
             "Stock has not enough '%s' (x%d, required x%d)",
-            name,
+            label,
             available,
             needed
           )
         )
       end
-      table.insert(missingItems, { name = name, count = needed })
+      table.insert(
+        missingItems,
+        { name = item.name, count = needed, displayName = item.displayName }
+      )
     end
   end
 
@@ -110,10 +144,12 @@ function Stock.getItemsForRecipe(recipe, batchSize)
   local scaledItems = {}
   for _, item in pairs(requiredItems) do
     if not item.catalyst then
-      table.insert(
-        scaledItems,
-        { name = item.name, count = item.count * batchSize }
-      )
+      table.insert(scaledItems, {
+        name = item.name,
+        nbt = item.nbt,
+        displayName = item.displayName,
+        count = item.count * batchSize,
+      })
     end
   end
   local _, missingItems = Stock.getMissingItems(scaledItems)
@@ -135,7 +171,10 @@ function Stock.getItemsForRecipe(recipe, batchSize)
     if not slotsByName[name] then
       slotsByName[name] = {}
     end
-    table.insert(slotsByName[name], { slot = slot, remaining = item.count })
+    table.insert(
+      slotsByName[name],
+      { slot = slot, remaining = item.count, nbt = item.nbt }
+    )
   end
 
   -- Assign a stock slot to each recipe grid position individually.
@@ -155,22 +194,27 @@ function Stock.getItemsForRecipe(recipe, batchSize)
       if remaining <= 0 then
         break
       end
-      local take = math.min(entry.remaining, remaining)
-      if take > 0 then
-        entry.remaining = entry.remaining - take
-        remaining = remaining - take
-        table.insert(pushList, {
-          name = name,
-          count = take,
-          slot = entry.slot,
-          crafterSlot = crafterSlot,
-        })
+      if slotMatchesVariant(entry, recipeItem) then
+        local take = math.min(entry.remaining, remaining)
+        if take > 0 then
+          entry.remaining = entry.remaining - take
+          remaining = remaining - take
+          table.insert(pushList, {
+            name = name,
+            count = take,
+            slot = entry.slot,
+            crafterSlot = crafterSlot,
+          })
+        end
       end
     end
 
     if remaining > 0 then
       Logger.raiseError(
-        string.format("Not enough '%s' in stock for batch", name)
+        string.format(
+          "Not enough '%s' in stock for batch",
+          ingredientLabel(recipeItem)
+        )
       )
     end
     ::continue::
@@ -190,8 +234,9 @@ function Stock.getCatalystItemsForRecipe(recipe)
   local slotsByName = {}
   for slot, item in pairs(listItems(stockIn)) do
     if not slotsByName[item.name] then
-      slotsByName[item.name] = slot
+      slotsByName[item.name] = {}
     end
+    table.insert(slotsByName[item.name], { slot = slot, nbt = item.nbt })
   end
 
   local pushList = {}
@@ -199,10 +244,19 @@ function Stock.getCatalystItemsForRecipe(recipe)
     if recipeItem.catalyst then
       local name = recipeItem.name
       local crafterSlot = Recipes.countCrafterSlot(recipeItem.slot)
-      local stockSlot = slotsByName[name]
+      local stockSlot = nil
+      for _, entry in ipairs(slotsByName[name] or {}) do
+        if slotMatchesVariant(entry, recipeItem) then
+          stockSlot = entry.slot
+          break
+        end
+      end
       if not stockSlot then
         Logger.raiseError(
-          string.format("Catalyst '%s' not found in stock", name)
+          string.format(
+            "Catalyst '%s' not found in stock",
+            ingredientLabel(recipeItem)
+          )
         )
       end
       table.insert(pushList, {
@@ -231,7 +285,10 @@ function Stock.getItemsForMachineRecipe(recipe, batchSize)
     if not slotsByName[name] then
       slotsByName[name] = {}
     end
-    table.insert(slotsByName[name], { slot = slot, remaining = item.count })
+    table.insert(
+      slotsByName[name],
+      { slot = slot, remaining = item.count, nbt = item.nbt }
+    )
   end
 
   local pushList = {}
@@ -245,22 +302,27 @@ function Stock.getItemsForMachineRecipe(recipe, batchSize)
       if remaining <= 0 then
         break
       end
-      local take = math.min(entry.remaining, remaining)
-      if take > 0 then
-        entry.remaining = entry.remaining - take
-        remaining = remaining - take
-        table.insert(pushList, {
-          name = name,
-          count = take,
-          slot = entry.slot,
-          processor = recipeItem.processor,
-        })
+      if slotMatchesVariant(entry, recipeItem) then
+        local take = math.min(entry.remaining, remaining)
+        if take > 0 then
+          entry.remaining = entry.remaining - take
+          remaining = remaining - take
+          table.insert(pushList, {
+            name = name,
+            count = take,
+            slot = entry.slot,
+            processor = recipeItem.processor,
+          })
+        end
       end
     end
 
     if remaining > 0 then
       Logger.raiseError(
-        string.format("Not enough '%s' in stock for machine batch", name)
+        string.format(
+          "Not enough '%s' in stock for machine batch",
+          ingredientLabel(recipeItem)
+        )
       )
     end
   end
@@ -641,10 +703,21 @@ function Stock.getDurabilityAwareTotals()
   local totals = {}
   local maxDmg = {}
 
+  -- Variant items are ALSO counted under "name\0nbt" so the planner can
+  -- check a specific variant's amount (the plain-name total stays the
+  -- aggregate over all variants for nbt-less recipes).
+  local function add(name, nbt, amount)
+    totals[name] = (totals[name] or 0) + amount
+    if nbt then
+      local vk = Utils.variantKey(name, nbt)
+      totals[vk] = (totals[vk] or 0) + amount
+    end
+  end
+
   for slot, item in pairs(listItems(stock)) do
     -- Damageable items cannot stack, so skip getItemDetail for count > 1.
     if item.count > 1 then
-      totals[item.name] = (totals[item.name] or 0) + item.count
+      add(item.name, item.nbt, item.count)
     else
       local detail = getItemDetail(stock, slot)
       if detail then
@@ -653,10 +726,9 @@ function Stock.getDurabilityAwareTotals()
           maxDmg[detail.name] = md
         end
         if md > 0 then
-          totals[detail.name] = (totals[detail.name] or 0)
-            + (md - (detail.damage or 0))
+          add(detail.name, detail.nbt, md - (detail.damage or 0))
         else
-          totals[detail.name] = (totals[detail.name] or 0) + 1
+          add(detail.name, detail.nbt, 1)
         end
       end
     end

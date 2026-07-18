@@ -2,28 +2,41 @@ local Fluids = require("lib.fluids")
 local Logger = require("lib.logger")
 local Recipes = require("lib.recipes")
 local Stock = require("lib.stock")
+local Utils = require("lib.utils")
 
 local Planner = {}
 
 -- Fluids share the planner's virtual-stock tables with items, keyed as
 -- "fluid:<id>" so a fluid can never collide with an item of the same id.
--- Amounts for fluid entries are mB, not item counts.
+-- Amounts for fluid entries are mB, not item counts. Same-id NBT variants
+-- are keyed "name\0nbt" (matching Stock.getDurabilityAwareTotals), so a
+-- shortage names the exact variant instead of the shared id total.
 
--- Combined ingredient list of a recipe: items (as-is) plus fluids under
--- their prefixed names. Every planner/validator/scheduler pass uses this so
--- fluid requirements flow through the exact same accounting as items.
+-- Combined ingredient list of a recipe: items (variant-keyed, with their
+-- displayName for messages) plus fluids under their prefixed names. Every
+-- planner/validator/scheduler pass uses this so fluid and variant
+-- requirements flow through the exact same accounting as plain items.
 function Planner.getAllIngredients(recipe)
-  local list = Recipes.getRequiredItemsPlainList(recipe)
+  local list = {}
+  for _, item in ipairs(Recipes.getRequiredItemsPlainList(recipe)) do
+    table.insert(list, {
+      name = Utils.variantKey(item.name, item.nbt),
+      count = item.count,
+      catalyst = item.catalyst,
+      displayName = item.displayName,
+    })
+  end
   for _, fluid in ipairs(Recipes.getRequiredFluidsPlainList(recipe)) do
     table.insert(list, { name = Fluids.PREFIX .. fluid.name, count = fluid.mb })
   end
   return list
 end
 
--- Recipe lookup that understands prefixed fluid names. Plain names resolve
--- to item recipes only (a fluid recipe stored under the same id must not
--- shadow an item recipe and vice versa); "fluid:" names resolve to
--- fluid-result recipes.
+-- Recipe lookup that understands prefixed fluid names and variant keys.
+-- Plain names resolve to item recipes without an output nbt only (a fluid
+-- recipe or a variant recipe must not shadow the plain item and vice
+-- versa); "fluid:" names resolve to fluid-result recipes; "name\0nbt" keys
+-- resolve to the recipe producing that exact variant.
 local function resolveRecipe(recipes, name)
   if Fluids.isFluidName(name) then
     local fluidName = Fluids.stripPrefix(name)
@@ -34,24 +47,43 @@ local function resolveRecipe(recipes, name)
     end
     return nil
   end
+  local base, nbt = name:match("^([^\0]+)\0(.+)$")
+  if base then
+    for _, recipe in pairs(recipes) do
+      if
+        recipe.name == base
+        and recipe.nbt == nbt
+        and recipe.resultType ~= "fluid"
+      then
+        return recipe
+      end
+    end
+    return nil
+  end
+  local function plainMatch(recipe)
+    return recipe.name == name
+      and recipe.resultType ~= "fluid"
+      and recipe.nbt == nil
+  end
   local exact = recipes[name]
-  if exact and exact.resultType ~= "fluid" then
+  if exact and plainMatch(exact) then
     return exact
   end
   for _, recipe in pairs(recipes) do
-    if recipe.name == name and recipe.resultType ~= "fluid" then
+    if plainMatch(recipe) then
       return recipe
     end
   end
   return nil
 end
 
--- Plan-space name of what a recipe produces ("fluid:<id>" for fluid results).
+-- Plan-space name of what a recipe produces: "fluid:<id>" for fluid
+-- results, "name\0nbt" for variant outputs, plain name otherwise.
 local function producedName(recipe)
   if recipe.resultType == "fluid" then
     return Fluids.PREFIX .. recipe.name
   end
-  return recipe.name
+  return Utils.variantKey(recipe.name, recipe.nbt)
 end
 
 -- Recursively builds an ordered craft plan (sub-crafts first, target last).
@@ -150,6 +182,10 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
     end
     if root and root.resultType == "fluid" then
       rootPlanName = Fluids.PREFIX .. Fluids.stripPrefix(recipeName)
+    elseif root and root.nbt then
+      -- Variant output: plan under its variant key so consumers and the
+      -- virtual-stock bookkeeping line up.
+      rootPlanName = Utils.variantKey(recipeName, root.nbt)
     end
   end
   expand(rootPlanName, neededCount, false, rootRecipe)
@@ -206,9 +242,12 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
 end
 
 -- Simulates plan execution against current stock and collects all shortfalls.
--- Returns list of { name, count } for every item that would be missing.
+-- Returns list of { name, count, displayName } for every item that would be
+-- missing (name may be a variant key or a "fluid:" name; displayName is the
+-- variant's friendly name when the recipe recorded one).
 function Planner.validatePlan(plan, totals, maxDmg)
   local missingByName = {}
+  local missingDisplay = {}
   local virtual
   if totals then
     virtual = {}
@@ -234,6 +273,8 @@ function Planner.validatePlan(plan, totals, maxDmg)
         local itemShortage = md > 0 and math.ceil(shortage / md) or shortage
         missingByName[ingredient.name] = (missingByName[ingredient.name] or 0)
           + itemShortage
+        missingDisplay[ingredient.name] = missingDisplay[ingredient.name]
+          or ingredient.displayName
         if not ingredient.catalyst then
           virtual[ingredient.name] = 0
         end
@@ -249,7 +290,10 @@ function Planner.validatePlan(plan, totals, maxDmg)
 
   local missing = {}
   for name, count in pairs(missingByName) do
-    table.insert(missing, { name = name, count = count })
+    table.insert(
+      missing,
+      { name = name, count = count, displayName = missingDisplay[name] }
+    )
   end
   table.sort(missing, function(a, b)
     return a.name < b.name

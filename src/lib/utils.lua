@@ -49,6 +49,48 @@ function Utils.getMod(name)
   return name:match("^([^:]+):") or "other"
 end
 
+-- Pretty fallback name from an id: "create:molten_iron" -> "Molten Iron".
+-- Dotted ids ("item.avaritia.dur_singularity") keep only the last segment.
+function Utils.prettifyId(name)
+  local s = Utils.stripMod(name)
+  s = s:match("([^.]+)$") or s
+  s = s:gsub("_", " ")
+  return (
+    s:gsub("(%a)(%w*)", function(head, tail)
+      return head:upper() .. tail
+    end)
+  )
+end
+
+-- Friendly name from an optional displayName + id. A leaked raw translation
+-- key ("item.avaritia.x", no spaces but dots/underscores) is prettified.
+function Utils.friendlyName(displayName, name)
+  local dn = displayName
+  if dn and dn ~= "" then
+    if dn:find(" ", 1, true) then
+      return dn
+    end
+    if dn:find(".", 1, true) or dn:find("_", 1, true) then
+      return Utils.prettifyId(dn)
+    end
+    return dn
+  end
+  return Utils.prettifyId(name or "?")
+end
+
+-- Same-id NBT variants are tracked in plan/stock accounting under a
+-- composite key "name\0nbt"; items without nbt keep their plain name.
+function Utils.variantKey(name, nbt)
+  if nbt then
+    return name .. "\0" .. nbt
+  end
+  return name
+end
+
+function Utils.variantBase(key)
+  return key:match("^([^\0]+)") or key
+end
+
 function Utils.serializeTable(tbl)
   local serialized = textutils.serialize(tbl)
   return serialized

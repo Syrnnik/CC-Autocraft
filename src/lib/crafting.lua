@@ -49,14 +49,19 @@ local function mergedTotals()
   return totals, maxDmg
 end
 
--- Human-readable name for a missing-ingredient report line.
-local function missingLine(name, count)
+-- Human-readable line for the missing-ingredients report. `name` may be a
+-- plain id, a "name\0nbt" variant key or a "fluid:" name; displayName (when
+-- the recipe recorded one) names the exact variant.
+local function missingLine(name, count, displayName)
   if Fluids.isFluidName(name) then
-    local fluid = Fluids.stripPrefix(name)
-    local display = fluid:match("^[^:]+:(.+)") or fluid
+    local display = Utils.friendlyName(displayName, Fluids.stripPrefix(name))
     return "- " .. display .. " x" .. count .. "mB"
   end
-  local display = name:match("^[^:]+:(.+)") or name
+  local base = Utils.variantBase(name)
+  local display = Utils.friendlyName(displayName, base)
+  if name ~= base and not displayName then
+    display = display .. " (variant)"
+  end
   return "- " .. display .. " x" .. count
 end
 
@@ -334,8 +339,12 @@ end
 
 -- Returns items in the recipe interface pattern slots only (same grid used by
 -- getNewRecipeItems). Ignores items in other slots (e.g. decoration stacks).
+-- Each entry carries its own per-slot displayName: items sharing one id but
+-- differing in NBT (Avaritia singularities and the like) must not all render
+-- under whatever name the shared store happens to hold.
 function Crafting.getInterfaceItems()
-  local listing = Utils.wrapPeripheral(interfaceName()).list()
+  local interface = Utils.wrapPeripheral(interfaceName())
+  local listing = interface.list()
   local items = {}
   for _, slot in ipairs(patternSlots()) do
     local item = listing[slot]
@@ -343,6 +352,23 @@ function Crafting.getInterfaceItems()
       table.insert(items, { name = item.name, count = item.count, slot = slot })
     end
   end
+
+  -- One concurrent getItemDetail per occupied slot (~1 tick total).
+  local tasks = {}
+  for _, item in ipairs(items) do
+    local captItem = item
+    tasks[#tasks + 1] = function()
+      local detail = interface.getItemDetail(captItem.slot)
+      if detail then
+        captItem.displayName = detail.displayName
+        -- nbt hash distinguishes same-id variants (Avaritia singularities):
+        -- saved with the recipe so crafting can pull the exact variant.
+        captItem.nbt = detail.nbt
+      end
+    end
+  end
+  Utils.runParallel(tasks)
+
   return items
 end
 
@@ -1084,7 +1110,7 @@ function Crafting.craftItem(
   if #missing > 0 then
     local lines = { "Missing items:" }
     for _, item in ipairs(missing) do
-      table.insert(lines, missingLine(item.name, item.count))
+      table.insert(lines, missingLine(item.name, item.count, item.displayName))
     end
     error(table.concat(lines, "\n"), 0)
   end

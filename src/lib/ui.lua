@@ -118,26 +118,45 @@ local stripMod = Utils.stripMod
 
 -- Pretty fallback for ids without a stored displayName:
 -- "create:molten_iron" -> "Molten Iron".
-local function prettifyId(name)
-  local s = stripMod(name)
-  -- Dotted ids ("item.avaritia.dur_singularity") keep only the last segment.
-  s = s:match("([^.]+)$") or s
-  s = s:gsub("_", " ")
-  return (
-    s:gsub("(%a)(%w*)", function(head, tail)
-      return head:upper() .. tail
-    end)
-  )
+local prettifyId = Utils.prettifyId
+
+-- True when a "display name" is actually a raw id / translation key that a
+-- mod leaked instead of a real name ("item.avaritia.dur_singularity"):
+-- no spaces, but dots or underscores.
+local function looksRaw(s)
+  return not s:find(" ", 1, true)
+    and (s:find(".", 1, true) ~= nil or s:find("_", 1, true) ~= nil)
 end
 
--- Friendly name for an item id: stored displayName if known, else the id
+-- Friendly name for an item id: stored displayName if known (and not itself
+-- a raw translation key -- those get prettified too), else the id
 -- prettified. Plan-space fluid names ("fluid:minecraft:lava") lose their
 -- prefix first so they render like any other name. Fluids never get a real
 -- displayName (the CC fluid API doesn't report one), so they always use the
 -- prettified id -- or a manual entry in data/display_names.json.
 local function resolveDisplay(name)
   name = Fluids.stripPrefix(name)
-  return DisplayNames.get(name) or prettifyId(name)
+  -- Plan-space variant keys ("name\0nbt") fall back to their base id.
+  name = Utils.variantBase(name)
+  local dn = DisplayNames.get(name)
+  if dn and not looksRaw(dn) then
+    return dn
+  end
+  return prettifyId(dn or name)
+end
+
+-- Shared "displayName or resolve" for rows that carry their own displayName
+-- (recipes, machine items, scan results). A leaked raw key is prettified
+-- IN PLACE -- never fall back to the by-id store: same-id NBT variants
+-- (Avaritia singularities) would all collapse to one shared name there.
+local function displayOrResolve(dn, name)
+  if dn then
+    if looksRaw(dn) then
+      return prettifyId(dn)
+    end
+    return dn
+  end
+  return resolveDisplay(name)
 end
 
 -- Compact mB amount for tables: "500mB", "12.5K mB", "1.2M mB".
@@ -736,7 +755,7 @@ local function drawRecipesList()
     if
       sq == ""
       or matchesQuery(stripMod(r.name), sq)
-      or matchesQuery(r.displayName or resolveDisplay(r.name), sq)
+      or matchesQuery(displayOrResolve(r.displayName, r.name), sq)
     then
       table.insert(filtered, r)
     end
@@ -751,7 +770,7 @@ local function drawRecipesList()
       state.page = p
     end,
     displayName = function(name, item)
-      return (item and item.displayName) or resolveDisplay(name)
+      return displayOrResolve(item and item.displayName, name)
     end,
     rightW = 29,
     emptyMsg = "No recipes yet",
@@ -817,6 +836,8 @@ local function drawRecipesList()
               for _, item in ipairs(recipe.items) do
                 table.insert(state.machineItems, {
                   name = item.name,
+                  displayName = item.displayName,
+                  nbt = item.nbt,
                   count = item.count,
                   slot = item.slot,
                   processor = item.processor,
@@ -1066,15 +1087,14 @@ local function drawNewRecipe()
         local isSelected = state.selectedItemIdx == i
         local captI = i
 
-        -- Item row: "  name" or "  name > machine"
+        -- Item row: "  name" or "  name > machine". Per-slot displayName
+        -- first: same-id NBT variants must show their own names.
+        local itemName = displayOrResolve(item.displayName, item.name)
         local lineText
         if item.processor then
-          lineText = "  "
-            .. resolveDisplay(item.name)
-            .. " > "
-            .. machineLabel(item.processor)
+          lineText = "  " .. itemName .. " > " .. machineLabel(item.processor)
         else
-          lineText = "  " .. resolveDisplay(item.name)
+          lineText = "  " .. itemName
         end
         local padded = truncate(lineText, W - L)
         padded = padded .. string.rep(" ", math.max(0, W - L - #padded))
@@ -1664,9 +1684,10 @@ local function drawNewRecipe()
             return
           end
         end
+        -- Keyed by name+nbt so same-id variants can use different machines.
         local itemProcessors = {}
         for _, item in ipairs(state.machineItems) do
-          itemProcessors[item.name] = item.processor
+          itemProcessors[item.name .. "\0" .. (item.nbt or "")] = item.processor
         end
         local ok, err = pcall(
           Recipes.updateRecipeProcessor,
@@ -1725,7 +1746,7 @@ local function drawNewRecipe()
   if pr.craftedItem.isFluid then
     resultText = resolveDisplay(pr.name) .. " x" .. pr.craftedItem.count .. "mB"
   else
-    resultText = (pr.craftedItem.displayName or resolveDisplay(pr.name))
+    resultText = displayOrResolve(pr.craftedItem.displayName, pr.name)
       .. " x"
       .. pr.craftedItem.count
   end
@@ -1773,6 +1794,9 @@ local function makePlanView(plan)
   for i, step in ipairs(plan) do
     copy[i] = {
       name = step.name,
+      -- Variant outputs show the recipe's own displayName, not the shared
+      -- by-id name.
+      displayName = step.recipe.displayName,
       isFluid = step.recipe.resultType == "fluid",
       perCraft = step.recipe.count,
       remaining = step.craftsCount * step.recipe.count,
@@ -2085,7 +2109,7 @@ local function drawCraftScreen()
           break
         end
         local label = "- "
-          .. resolveDisplay(step.name)
+          .. displayOrResolve(step.displayName, step.name)
           .. " x"
           .. step.remaining
           .. (step.isFluid and "mB" or "")
@@ -2203,7 +2227,7 @@ local function drawStockAnalysis(a)
       state.stockAnalysisPage = p
     end,
     displayName = function(name, item)
-      return (item and item.displayName) or resolveDisplay(name)
+      return displayOrResolve(item and item.displayName, name)
     end,
     rightW = 12,
     emptyMsg = "No lost slots - storage is packed tight",
@@ -3526,11 +3550,15 @@ reloadMachines = function()
 end
 
 reloadMachineItems = function()
-  -- Preserve existing processor assignments across rescans
+  -- Preserve existing processor assignments across rescans (per variant:
+  -- same-id items with different nbt may go to different machines)
+  local function variantKey(item)
+    return item.name .. "\0" .. (item.nbt or "")
+  end
   local existing = {}
   for _, item in ipairs(state.machineItems) do
     if item.processor then
-      existing[item.name] = item.processor
+      existing[variantKey(item)] = item.processor
     end
   end
 
@@ -3546,9 +3574,11 @@ reloadMachineItems = function()
   for _, item in ipairs(items) do
     table.insert(state.machineItems, {
       name = item.name,
+      displayName = item.displayName,
+      nbt = item.nbt,
       count = item.count,
       slot = item.slot,
-      processor = existing[item.name],
+      processor = existing[variantKey(item)] or existing[item.name .. "\0"],
     })
   end
 end

@@ -79,6 +79,10 @@ function Recipes.getNewRecipeItems(interfaceName)
           crafterSlot = crafterSlot,
           name = itemName,
           count = itemCount,
+          -- nbt hash distinguishes same-id variants; kept (with the variant
+          -- displayName for messages) so crafting pulls the exact variant.
+          nbt = item.nbt,
+          displayName = item.displayName,
         })
       else
         Logger.printDebug(string.format("Slot %d is empty", slot))
@@ -100,9 +104,13 @@ function Recipes.getRequiredItemsPlainList(recipe)
     local recipeItemName = recipeItem.name
     local recipeItemCount = recipeItem.count
 
+    -- Merge by name AND nbt: same-id variants are different ingredients.
     local isExists = false
     for i, requiredItem in pairs(requiredItems) do
-      if recipeItemName == requiredItem.name then
+      if
+        recipeItemName == requiredItem.name
+        and recipeItem.nbt == requiredItem.nbt
+      then
         isExists = true
         if not recipeItem.catalyst then
           requiredItems[i].count = requiredItem.count + recipeItemCount
@@ -114,6 +122,8 @@ function Recipes.getRequiredItemsPlainList(recipe)
     if not isExists then
       table.insert(requiredItems, {
         name = recipeItemName,
+        nbt = recipeItem.nbt or nil,
+        displayName = recipeItem.displayName or nil,
         count = recipeItem.catalyst and 1 or recipeItemCount,
         catalyst = recipeItem.catalyst or nil,
       })
@@ -261,6 +271,8 @@ function Recipes.saveRecipe(
     for _, item in ipairs(recipeItems) do
       table.insert(items, {
         name = item.name,
+        displayName = item.displayName or nil,
+        nbt = item.nbt or nil,
         count = item.count,
         processor = toLabelOrPort(item.processor),
       })
@@ -269,6 +281,8 @@ function Recipes.saveRecipe(
     for _, item in ipairs(recipeItems) do
       local entry = {
         name = item.name,
+        nbt = item.nbt or nil,
+        displayName = item.nbt and item.displayName or nil,
         count = item.count,
         slot = item.recipeSlot,
       }
@@ -282,6 +296,9 @@ function Recipes.saveRecipe(
   local recipe = {
     name = craftedItem.name,
     displayName = craftedItem.displayName or nil,
+    -- Output variant: lets the planner credit/match the exact variant when
+    -- another recipe consumes it as an nbt ingredient.
+    nbt = craftedItem.nbt or nil,
     count = craftedItem.count,
     maxCount = craftedItem.maxCount or nil,
     items = items,
@@ -345,7 +362,13 @@ function Recipes.updateRecipeProcessor(
     recipe.resultProcessor = toLabelOrPort(resultProcessor)
     recipe.processor = nil
     for _, item in ipairs(recipe.items) do
-      local proc = itemProcessors and itemProcessors[item.name]
+      -- itemProcessors is keyed "name\0nbt" (see the SETUP save path);
+      -- plain-name keys are accepted for older callers.
+      local proc = itemProcessors
+        and (
+          itemProcessors[item.name .. "\0" .. (item.nbt or "")]
+          or itemProcessors[item.name]
+        )
       item.processor = proc and toLabelOrPort(proc) or nil
     end
     if recipeFluids then
