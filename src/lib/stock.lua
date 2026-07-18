@@ -138,24 +138,46 @@ function Stock.getMissingItems(items)
   return stockItems, missingItems
 end
 
+-- Short-lived stock snapshot for affordability polling. Several waiting
+-- steps poll every 0.5s; without the cache each poll re-listed every
+-- stock_in peripheral (and the whole fluid pool), which added up to a
+-- constant stream of peripheral calls that slowed crafting down.
+local affordSnapshot = { at = 0, totals = nil, fluids = nil }
+local AFFORD_SNAPSHOT_TTL_MS = 1000
+
+local function getAffordSnapshot()
+  local now = os.epoch("utc")
+  if
+    affordSnapshot.totals and now - affordSnapshot.at < AFFORD_SNAPSHOT_TTL_MS
+  then
+    return affordSnapshot
+  end
+
+  local totals = {}
+  local stockIn = getStockIn()
+  if stockIn then
+    for _, item in pairs(listItems(stockIn)) do
+      totals[item.name] = (totals[item.name] or 0) + item.count
+      if item.nbt then
+        local vk = Utils.variantKey(item.name, item.nbt)
+        totals[vk] = (totals[vk] or 0) + item.count
+      end
+    end
+  end
+
+  affordSnapshot = { at = now, totals = totals, fluids = nil }
+  return affordSnapshot
+end
+
 -- How many cycles of `recipe` the CURRENT stock (items + fluid pool) can
 -- supply, capped at wantedCycles. Variant-aware; catalysts only need to be
 -- present. Used by streaming plan execution to start a consumer step as
 -- soon as its producers have delivered enough for a partial batch.
+-- Reads the (up to 1s stale) shared snapshot -- fine for a hint: the
+-- actual claim re-checks stock and shortages surface there.
 function Stock.getAffordableCycles(recipe, wantedCycles)
-  local stockIn = getStockIn()
-  if not stockIn then
-    return 0
-  end
-
-  local totals = {}
-  for _, item in pairs(listItems(stockIn)) do
-    totals[item.name] = (totals[item.name] or 0) + item.count
-    if item.nbt then
-      local vk = Utils.variantKey(item.name, item.nbt)
-      totals[vk] = (totals[vk] or 0) + item.count
-    end
-  end
+  local snapshot = getAffordSnapshot()
+  local totals = snapshot.totals
 
   local cycles = wantedCycles
   for _, item in ipairs(Recipes.getRequiredItemsPlainList(recipe)) do
@@ -172,11 +194,15 @@ function Stock.getAffordableCycles(recipe, wantedCycles)
     end
   end
 
-  for _, fluid in ipairs(Recipes.getRequiredFluidsPlainList(recipe)) do
-    local have = Fluids.count(fluid.name)
-    cycles = math.min(cycles, math.floor(have / fluid.mb))
-    if cycles <= 0 then
-      return 0
+  local fluids = Recipes.getRequiredFluidsPlainList(recipe)
+  if #fluids > 0 then
+    snapshot.fluids = snapshot.fluids or Fluids.getTotals()
+    for _, fluid in ipairs(fluids) do
+      local have = snapshot.fluids[fluid.name] or 0
+      cycles = math.min(cycles, math.floor(have / fluid.mb))
+      if cycles <= 0 then
+        return 0
+      end
     end
   end
 

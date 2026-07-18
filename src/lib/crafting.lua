@@ -1147,7 +1147,17 @@ function Crafting.processCraft(recipe, batchSize, onEach)
       local stockIn = stockInInv()
       local stockOut = stockOutInv()
 
-      local catalysts = Stock.getCatalystItemsForRecipe(recipe)
+      -- Skip the catalyst stock scan entirely for recipes without
+      -- catalysts (the common case): it costs a full stock listing.
+      local hasCatalysts = false
+      for _, item in ipairs(recipe.items) do
+        if item.catalyst then
+          hasCatalysts = true
+          break
+        end
+      end
+      local catalysts = hasCatalysts and Stock.getCatalystItemsForRecipe(recipe)
+        or {}
       local catalystSlots = {}
       for _, cat in ipairs(catalysts) do
         catalystSlots[cat.crafterSlot] = true
@@ -1352,7 +1362,7 @@ function Crafting.craftItem(
             batch = affordable
           else
             firstAffordableAt = firstAffordableAt or os.epoch("utc")
-            if os.epoch("utc") - firstAffordableAt >= 3000 then
+            if os.epoch("utc") - firstAffordableAt >= 1500 then
               firstAffordableAt = nil
               batch = affordable
             else
@@ -1407,6 +1417,11 @@ function Crafting.craftItem(
   end
 
   parallel.waitForAll(table.unpack(runners))
+
+  -- One recipes-file write for every avgTime measured during this craft
+  -- (mid-craft persistence was a measurable slowdown).
+  pcall(Recipes.flushAvgTimes)
+
   if failed then
     error(failed, 0)
   end

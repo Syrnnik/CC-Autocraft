@@ -202,16 +202,11 @@ function Recipes.saveAllRecipes(recipes, quiet)
 end
 
 -- Records one measured run duration (seconds) into the recipe's avgTime as
--- an exponential moving average, updating both the caller's in-memory table
--- and the stored recipe. A "run" is one crafter chunk or one machine cycle
--- -- the same unit the craft progress counts in.
---
--- Disk writes are throttled per recipe (10s): re-reading and re-writing the
--- whole recipes file after EVERY run measurably slowed crafting down once
--- streaming started splitting batches. The in-memory EMA is always current;
--- only its persistence lags a little.
-local avgSavedAt = {}
-local AVG_SAVE_INTERVAL_MS = 10000
+-- an exponential moving average. Only the in-memory tables are touched
+-- here: NO disk I/O happens during crafting (re-reading and re-writing the
+-- whole recipes file mid-craft measurably slowed everything down). The
+-- accumulated values are persisted once per craft via flushAvgTimes().
+local pendingAvg = {}
 
 function Recipes.updateAvgTime(recipe, seconds)
   if not seconds or seconds <= 0 then
@@ -228,23 +223,38 @@ function Recipes.updateAvgTime(recipe, seconds)
     .. tostring(recipe.displayName)
     .. "\0"
     .. tostring(recipe.resultType)
-  local now = os.epoch("utc")
-  if avgSavedAt[key] and now - avgSavedAt[key] < AVG_SAVE_INTERVAL_MS then
+  pendingAvg[key] = {
+    name = recipe.name,
+    displayName = recipe.displayName,
+    resultType = recipe.resultType,
+    avg = newAvg,
+  }
+end
+
+-- Persists every avgTime recorded since the last flush in ONE read+write
+-- of the recipes file. Called when a craft finishes (success or failure).
+function Recipes.flushAvgTimes()
+  if next(pendingAvg) == nil then
     return
   end
-
   local recipes = Recipes.getAllRecipes()
-  for _, stored in pairs(recipes) do
-    if
-      stored.name == recipe.name
-      and stored.displayName == recipe.displayName
-      and stored.resultType == recipe.resultType
-    then
-      stored.avgTime = newAvg
-      Recipes.saveAllRecipes(recipes, true)
-      avgSavedAt[key] = now
-      return
+  local changed = false
+  for _, entry in pairs(pendingAvg) do
+    for _, stored in pairs(recipes) do
+      if
+        stored.name == entry.name
+        and stored.displayName == entry.displayName
+        and stored.resultType == entry.resultType
+      then
+        stored.avgTime = entry.avg
+        changed = true
+        break
+      end
     end
+  end
+  pendingAvg = {}
+  if changed then
+    Recipes.saveAllRecipes(recipes, true)
   end
 end
 
