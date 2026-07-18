@@ -183,17 +183,49 @@ function Recipes.getAllRecipesItems()
   return items
 end
 
-function Recipes.saveAllRecipes(recipes)
+-- quiet: skip the success log (frequent background writes like avgTime
+-- updates would spam the terminal otherwise).
+function Recipes.saveAllRecipes(recipes, quiet)
   local file = fs.open(recipesPath, "w")
 
   if file then
     file.write(textutils.serializeJSON(recipes))
     file.close()
-    Logger.printSuccess(string.format("Recipe saved to '%s'", recipesPath))
+    if not quiet then
+      Logger.printSuccess(string.format("Recipe saved to '%s'", recipesPath))
+    end
   else
     Logger.printError(
       string.format("Failed to open '%s' for writing", recipesPath)
     )
+  end
+end
+
+-- Records one measured run duration (seconds) into the recipe's avgTime as
+-- an exponential moving average, updating both the caller's in-memory table
+-- and the stored recipe. A "run" is one crafter chunk or one machine cycle
+-- -- the same unit the craft progress counts in.
+function Recipes.updateAvgTime(recipe, seconds)
+  if not seconds or seconds <= 0 then
+    return
+  end
+  local alpha = 0.3
+  local newAvg = recipe.avgTime
+      and (recipe.avgTime * (1 - alpha) + seconds * alpha)
+    or seconds
+  recipe.avgTime = newAvg
+
+  local recipes = Recipes.getAllRecipes()
+  for _, stored in pairs(recipes) do
+    if
+      stored.name == recipe.name
+      and stored.displayName == recipe.displayName
+      and stored.resultType == recipe.resultType
+    then
+      stored.avgTime = newAvg
+      Recipes.saveAllRecipes(recipes, true)
+      return
+    end
   end
 end
 
@@ -248,6 +280,11 @@ function Recipes.addNewRecipe(newRecipe)
       end
       key = name .. "~" .. i
     end
+  end
+
+  -- Re-learning a recipe must not reset its measured craft time.
+  if recipes[key] and newRecipe.avgTime == nil then
+    newRecipe.avgTime = recipes[key].avgTime
   end
 
   recipes[key] = newRecipe

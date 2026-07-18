@@ -3,6 +3,7 @@ local Crafting = require("lib.crafting")
 local DisplayNames = require("lib.display_names")
 local Fluids = require("lib.fluids")
 local Labels = require("lib.labels")
+local Planner = require("lib.planner")
 local Roles = require("lib.roles")
 local Network = require("lib.network")
 local Recipes = require("lib.recipes")
@@ -101,6 +102,8 @@ local state = {
   craftMsgIsErr = false,
   craftMsgIsDone = false,
   craftProgress = 0, -- 0-100
+  craftEta = nil, -- seconds left (estimate before start, live rate after)
+  craftStartAt = nil, -- os.epoch("utc") when the craft started
   craftPlanning = false, -- true while plan is being built
   craftPlan = nil, -- list of { name, craftsCount, recipe } for display
   craftQueue = nil, -- { name, count }[] when crafting from checklist queue; nil = single
@@ -157,6 +160,17 @@ local function displayOrResolve(dn, name)
     return dn
   end
   return resolveDisplay(name)
+end
+
+-- Duration as "HH:MM:SS" for the craft-time display.
+local function fmtTime(seconds)
+  seconds = math.max(0, math.floor(seconds + 0.5))
+  return string.format(
+    "%02d:%02d:%02d",
+    math.floor(seconds / 3600),
+    math.floor((seconds % 3600) / 60),
+    seconds % 60
+  )
 end
 
 -- Compact mB amount for tables: "500mB", "12.5K mB", "1.2M mB".
@@ -809,6 +823,8 @@ local function drawRecipesList()
           state.craftMsgIsErr = false
           state.craftMsgIsDone = false
           state.craftProgress = 0
+          state.craftEta = nil
+          state.craftStartAt = nil
           state.craftPlanning = false
           state.craftPlan = nil
           state.tab = "craft"
@@ -1782,8 +1798,25 @@ local function prepareCraftState(name, count)
   state.craftMsgIsErr = false
   state.craftMsgIsDone = false
   state.craftProgress = 0
+  state.craftEta = nil
+  state.craftStartAt = nil
   state.craftPlanning = true
   state.craftPlan = nil
+end
+
+-- Live remaining-time update from actual craft speed: once runs complete,
+-- elapsed/done extrapolates the rest (self-correcting, converges fast on
+-- big homogeneous crafts). Before the first run the plan estimate stands.
+local function updateEta(doneRuns, totalRuns)
+  if not state.craftStartAt or doneRuns <= 0 then
+    return
+  end
+  if doneRuns >= totalRuns then
+    state.craftEta = 0
+    return
+  end
+  local elapsed = (os.epoch("utc") - state.craftStartAt) / 1000
+  state.craftEta = elapsed / doneRuns * (totalRuns - doneRuns)
 end
 
 -- Builds the on-screen copy of a craft plan. Each entry tracks `remaining`
@@ -1843,12 +1876,14 @@ end
 local function makeCraftTask(name, count, key, isFluid)
   local rootRecipe = key and Recipes.getRecipeByKey(key) or nil
   return function(redraw)
+    state.craftStartAt = os.epoch("utc")
     local ok, err = pcall(
       Crafting.craftItem,
       name,
       count,
       function(i, total, stepName, craftsDone)
         state.craftProgress = math.floor(i / total * 100)
+        updateEta(i, total)
         updatePlanStepProgress(stepName, craftsDone)
         if redraw then
           redraw()
@@ -1857,6 +1892,10 @@ local function makeCraftTask(name, count, key, isFluid)
       function(plan)
         state.craftPlan = makePlanView(plan)
         state.craftPlanning = false
+        local okEst, est = pcall(Planner.estimateTime, plan)
+        if okEst then
+          state.craftEta = est
+        end
         if redraw then
           redraw()
         end
@@ -1878,6 +1917,7 @@ local function makeCraftTask(name, count, key, isFluid)
         .. count
         .. (isFluid and "mB" or "")
       state.craftProgress = 100
+      state.craftEta = 0
     else
       state.craftMsg = tostring(err)
       state.craftMsgIsErr = true
@@ -1885,6 +1925,7 @@ local function makeCraftTask(name, count, key, isFluid)
       state.craftPlanning = false
       state.craftPlan = nil
       state.craftProgress = 0
+      state.craftEta = nil
     end
     reloadRecipes()
   end
@@ -1895,6 +1936,7 @@ local function makeCraftQueueTask(queue)
     for i, item in ipairs(queue) do
       state.craftQueueIdx = i
       prepareCraftState(item.name, item.count)
+      state.craftStartAt = os.epoch("utc")
       if redraw then
         redraw()
       end
@@ -1904,6 +1946,7 @@ local function makeCraftQueueTask(queue)
         item.count,
         function(step, total, stepName, craftsDone)
           state.craftProgress = math.floor(step / total * 100)
+          updateEta(step, total)
           updatePlanStepProgress(stepName, craftsDone)
           if redraw then
             redraw()
@@ -1912,6 +1955,10 @@ local function makeCraftQueueTask(queue)
         function(plan)
           state.craftPlan = makePlanView(plan)
           state.craftPlanning = false
+          local okEst, est = pcall(Planner.estimateTime, plan)
+          if okEst then
+            state.craftEta = est
+          end
           if redraw then
             redraw()
           end
@@ -1928,6 +1975,7 @@ local function makeCraftQueueTask(queue)
         state.craftMsgIsErr = true
         state.craftPlanning = false
         state.craftPlan = nil
+        state.craftEta = nil
         reloadRecipes()
         return
       end
@@ -1936,6 +1984,7 @@ local function makeCraftQueueTask(queue)
     state.craftMsgIsDone = true
     state.craftMsg = "Done! " .. #queue .. " items crafted"
     state.craftProgress = 100
+    state.craftEta = 0
     reloadRecipes()
   end
 end
@@ -2057,6 +2106,44 @@ local function drawCraftScreen()
         prepareCraftState(name, count)
         pendingTask = makeCraftTask(name, count, key, isFluid)
       end)
+
+      -- Dry run: plan + validate + time estimate, no crafting.
+      mkBtn(
+        L + #" Craft " + 1,
+        cur,
+        "Plan",
+        colors.black,
+        colors.lightBlue,
+        function()
+          local name = state.craftItem
+          local count = state.craftCount
+          local key = state.craftKey
+          state.craftMsg = "Planning..."
+          state.craftMsgIsErr = false
+          state.craftMsgIsDone = false
+          state.craftEta = nil
+          pendingTask = function()
+            local rootRecipe = key and Recipes.getRecipeByKey(key) or nil
+            local ok, plan, missing, est =
+              pcall(Crafting.previewCraft, name, count, rootRecipe)
+            if not ok then
+              state.craftMsg = tostring(plan)
+              state.craftMsgIsErr = true
+              return
+            end
+            state.craftEta = est
+            if #missing > 0 then
+              state.craftMsg = Crafting.formatMissing(missing)
+              state.craftMsgIsErr = true
+              state.craftMsgIsDone = false
+            else
+              state.craftMsg = "Everything exists! Ready to craft!"
+              state.craftMsgIsErr = false
+              state.craftMsgIsDone = true
+            end
+          end
+        end
+      )
     end
 
     if state.craftMsgIsDone and state.craftMsg then
@@ -2138,6 +2225,18 @@ local function drawCraftScreen()
     colors.black
   )
   at(barX + 1 + inner, barRow, "]", colors.gray, colors.black)
+
+  -- Remaining time under the bar: plan estimate before the first run,
+  -- live actual-rate extrapolation after (refreshed on every run).
+  if state.craftEta then
+    at(
+      L,
+      H,
+      "Time left: " .. fmtTime(state.craftEta),
+      colors.lightGray,
+      colors.black
+    )
+  end
 end
 
 -- ── Stock tab ───────────────────────────────────────────────

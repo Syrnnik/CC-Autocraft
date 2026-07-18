@@ -302,6 +302,34 @@ function Planner.validatePlan(plan, totals, maxDmg)
   return missing
 end
 
+-- Rough duration estimate for a plan, in seconds: runs * avgTime summed
+-- over all steps (a chunked crafter batch counts chunks, a machine batch
+-- counts cycles -- the same units craft progress uses). Recipes with no
+-- measured avgTime yet fall back to defaults (crafter ~2s/chunk, machine
+-- ~10s/cycle), so first-run numbers are approximate and tighten as
+-- measurements accumulate. Steps are summed sequentially, so for pipelined
+-- plans this is an upper bound.
+function Planner.estimateTime(plan)
+  local total = 0
+  for _, step in ipairs(plan) do
+    local recipe = step.recipe
+    local isMachine = (recipe.type or "crafter") == "machine"
+    local runs
+    if isMachine then
+      runs = step.craftsCount
+    else
+      local ok, maxBatch = pcall(Stock.getMaxBatchForRecipe, recipe)
+      if not ok or not maxBatch or maxBatch < 1 then
+        maxBatch = 1
+      end
+      runs = math.ceil(step.craftsCount / maxBatch)
+    end
+    local avg = recipe.avgTime or (isMachine and 10 or 2)
+    total = total + runs * avg
+  end
+  return total
+end
+
 function Planner.printPlan(plan)
   Logger.printInfo(string.format("Craft plan (%d steps):", #plan))
   for i, step in ipairs(plan) do

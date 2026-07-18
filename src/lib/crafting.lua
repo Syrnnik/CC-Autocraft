@@ -1010,7 +1010,11 @@ function Crafting.processCraft(recipe, batchSize, onEach)
     local done = 0
     while done < batchSize do
       local chunk = math.min(maxMachineBatch, batchSize - done)
+      local startedAt = os.epoch("utc")
       Crafting.craftMachine(recipe, chunk, onEach)
+      -- avgTime unit is one machine cycle (= one progress run).
+      local perCycle = (os.epoch("utc") - startedAt) / 1000 / chunk
+      pcall(Recipes.updateAvgTime, recipe, perCycle)
       done = done + chunk
     end
   else
@@ -1037,9 +1041,14 @@ function Crafting.processCraft(recipe, batchSize, onEach)
       local ok, err = pcall(function()
         while done < batchSize do
           local chunk = math.min(maxBatch, batchSize - done)
+          local startedAt = os.epoch("utc")
           local stockItems = Stock.getItemsForRecipe(recipe, chunk)
           Crafting.craft(stockItems, stockIn)
           Crafting.getCraftedItem(stockOut, false, catalystSlots)
+          -- avgTime unit is one crafter chunk (= one progress run); chunk
+          -- size barely affects duration (grid fill is parallel).
+          local perRun = (os.epoch("utc") - startedAt) / 1000
+          pcall(Recipes.updateAvgTime, recipe, perRun)
           done = done + chunk
           if onEach then
             onEach(chunk)
@@ -1108,11 +1117,7 @@ function Crafting.craftItem(
 
   local missing = Planner.validatePlan(plan, totals, maxDmg)
   if #missing > 0 then
-    local lines = { "Missing items:" }
-    for _, item in ipairs(missing) do
-      table.insert(lines, missingLine(item.name, item.count, item.displayName))
-    end
-    error(table.concat(lines, "\n"), 0)
+    error(Crafting.formatMissing(missing), 0)
   end
 
   -- Count total individual craft runs for per-item progress tracking.
@@ -1230,6 +1235,29 @@ end
 function Crafting.buildPlan(recipeName, count, rootRecipe)
   local totals = mergedTotals()
   return Planner.buildCraftPlan(recipeName, count, totals, rootRecipe)
+end
+
+-- Multiline "Missing items:" report (same format the craft error uses).
+function Crafting.formatMissing(missing)
+  local lines = { "Missing items:" }
+  for _, item in ipairs(missing) do
+    table.insert(lines, missingLine(item.name, item.count, item.displayName))
+  end
+  return table.concat(lines, "\n")
+end
+
+-- Dry run for the Plan button: builds the plan, validates it against the
+-- current stock and estimates the duration -- without crafting anything.
+-- Returns plan, missing (list), estimateSeconds. Raises when no recipe.
+function Crafting.previewCraft(recipeName, count, rootRecipe)
+  local totals, maxDmg = mergedTotals()
+  local plan = Planner.buildCraftPlan(recipeName, count, totals, rootRecipe)
+  if #plan == 0 then
+    Logger.raiseError(string.format("No recipe found for '%s'", recipeName))
+  end
+  local missing = Planner.validatePlan(plan, totals, maxDmg)
+  local estimate = Planner.estimateTime(plan)
+  return plan, missing, estimate
 end
 
 return Crafting
