@@ -520,23 +520,35 @@ function Stock.getTotals()
   return totals
 end
 
--- Returns a slot-addressable inventory facing the storage, plus its
--- peripheral name (needed for self-directed pushItems). Tries the Stock View
--- first; custom view peripherals may not expose size/list, so it falls back
--- to Stock Out, which faces the same storage.
+-- Returns a slot-addressable inventory covering the WHOLE physical
+-- storage, plus its peripheral name (needed for self-directed pushItems).
+-- Built from the union of every port assigned to Stock View, Stock In and
+-- Stock Out (deduplicated): the roles usually overlap but none alone is
+-- guaranteed to cover everything. Listing-only peripherals with no real
+-- size() (stock tickers) are excluded -- their capacity is unknowable, and
+-- counting them made "slots free" meaningless.
 local function slotInventory()
-  -- pcall: a disconnected Stock View port falls through to Stock Out
-  -- (same as the old wrap-returns-nil behavior) instead of erroring.
-  local ok, inv, name = pcall(MultiInv.forRole, "stock_view")
-  if not ok then
-    inv, name = nil, nil
+  local seen = {}
+  local ports = {}
+  for _, role in ipairs({ "stock_view", "stock_in", "stock_out" }) do
+    for _, port in ipairs(Roles.getPorts(role)) do
+      if not seen[port] then
+        seen[port] = true
+        if peripheral.isPresent(port) then
+          local p = Utils.wrapPeripheral(port)
+          if type(p.size) == "function" and type(p.list) == "function" then
+            table.insert(ports, port)
+          end
+        end
+      end
+    end
   end
-  if not (inv and inv.size and inv.list) then
-    inv, name = MultiInv.forRole("stock_out")
-  end
-  if not (inv and inv.size and inv.list) then
+  table.sort(ports)
+
+  local ok, inv, name = pcall(MultiInv.wrap, ports)
+  if not ok or not (inv and inv.size and inv.list) then
     Logger.raiseError(
-      "Neither Stock View nor Stock Out exposes slots (size/list)"
+      "No slot-addressable storage found in Stock View/In/Out roles"
     )
   end
   return inv, name
