@@ -205,6 +205,14 @@ end
 -- an exponential moving average, updating both the caller's in-memory table
 -- and the stored recipe. A "run" is one crafter chunk or one machine cycle
 -- -- the same unit the craft progress counts in.
+--
+-- Disk writes are throttled per recipe (10s): re-reading and re-writing the
+-- whole recipes file after EVERY run measurably slowed crafting down once
+-- streaming started splitting batches. The in-memory EMA is always current;
+-- only its persistence lags a little.
+local avgSavedAt = {}
+local AVG_SAVE_INTERVAL_MS = 10000
+
 function Recipes.updateAvgTime(recipe, seconds)
   if not seconds or seconds <= 0 then
     return
@@ -215,6 +223,16 @@ function Recipes.updateAvgTime(recipe, seconds)
     or seconds
   recipe.avgTime = newAvg
 
+  local key = tostring(recipe.name)
+    .. "\0"
+    .. tostring(recipe.displayName)
+    .. "\0"
+    .. tostring(recipe.resultType)
+  local now = os.epoch("utc")
+  if avgSavedAt[key] and now - avgSavedAt[key] < AVG_SAVE_INTERVAL_MS then
+    return
+  end
+
   local recipes = Recipes.getAllRecipes()
   for _, stored in pairs(recipes) do
     if
@@ -224,6 +242,7 @@ function Recipes.updateAvgTime(recipe, seconds)
     then
       stored.avgTime = newAvg
       Recipes.saveAllRecipes(recipes, true)
+      avgSavedAt[key] = now
       return
     end
   end

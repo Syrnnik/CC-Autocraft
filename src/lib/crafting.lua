@@ -1296,6 +1296,7 @@ function Crafting.craftItem(
     runners[i] = function()
       local remaining = step.craftsCount
       local transientRetries = 0
+      local firstAffordableAt = nil
       local onEach = function(craftsDone)
         notify(function()
           doneRuns = doneRuns + (craftsDone or 1)
@@ -1303,6 +1304,20 @@ function Crafting.craftItem(
             onStep(doneRuns, totalRuns, step.name, craftsDone or 1)
           end
         end)
+      end
+
+      -- A "worthwhile" partial batch: one full executor chunk. Crafting
+      -- every single item the moment it appears pays the fixed per-batch
+      -- overhead (locks, stock scan, push, poll, clear) over and over.
+      local chunkTarget
+      do
+        local isMachine = (step.recipe.type or "crafter") == "machine"
+        local ok, max = pcall(
+          isMachine and Stock.getMaxBatchForMachineRecipe
+            or Stock.getMaxBatchForRecipe,
+          step.recipe
+        )
+        chunkTarget = (ok and max) or 1
       end
 
       while remaining > 0 do
@@ -1318,14 +1333,32 @@ function Crafting.craftItem(
           end
         end
 
-        -- Producers still working: craft only what stock affords right now.
-        -- Producers done: claim the full remainder (validation promised it;
-        -- a real shortage must surface as an error, not an endless wait).
+        -- Producers still working: craft only what stock affords right
+        -- now, but ACCUMULATE first -- take a partial batch either when a
+        -- full executor chunk's worth is ready or when ingredients have
+        -- been sitting for a few seconds (slow producer). Producers done:
+        -- claim the full remainder (validation promised it; a real
+        -- shortage must surface as an error, not an endless wait).
         local batch = remaining
         if not depsDone then
           local okAff, affordable =
             pcall(Stock.getAffordableCycles, step.recipe, remaining)
-          batch = (okAff and affordable) or 0
+          affordable = (okAff and affordable) or 0
+          if affordable <= 0 then
+            firstAffordableAt = nil
+            batch = 0
+          elseif affordable >= math.min(remaining, chunkTarget) then
+            firstAffordableAt = nil
+            batch = affordable
+          else
+            firstAffordableAt = firstAffordableAt or os.epoch("utc")
+            if os.epoch("utc") - firstAffordableAt >= 3000 then
+              firstAffordableAt = nil
+              batch = affordable
+            else
+              batch = 0
+            end
+          end
         end
 
         if batch > 0 then

@@ -1878,6 +1878,7 @@ local function makeCraftTask(name, count, key, isFluid)
   local rootRecipe = key and Recipes.getRecipeByKey(key) or nil
   return function(redraw)
     state.craftStartAt = os.epoch("utc")
+    local lastDrawAt = 0
     local ok, err = pcall(
       Crafting.craftItem,
       name,
@@ -1886,7 +1887,11 @@ local function makeCraftTask(name, count, key, isFluid)
         state.craftProgress = math.floor(i / total * 100)
         updateEta(i, total)
         updatePlanStepProgress(stepName, craftsDone)
-        if redraw then
+        -- Full monitor redraws are not free: cap them at ~4/s (the final
+        -- run always draws so the bar ends at 100%).
+        local now = os.epoch("utc")
+        if redraw and (now - lastDrawAt >= 250 or i >= total) then
+          lastDrawAt = now
           redraw()
         end
       end,
@@ -1938,6 +1943,7 @@ local function makeCraftQueueTask(queue)
       state.craftQueueIdx = i
       prepareCraftState(item.name, item.count)
       state.craftStartAt = os.epoch("utc")
+      local lastDrawAt = 0
       if redraw then
         redraw()
       end
@@ -1949,7 +1955,9 @@ local function makeCraftQueueTask(queue)
           state.craftProgress = math.floor(step / total * 100)
           updateEta(step, total)
           updatePlanStepProgress(stepName, craftsDone)
-          if redraw then
+          local now = os.epoch("utc")
+          if redraw and (now - lastDrawAt >= 250 or step >= total) then
+            lastDrawAt = now
             redraw()
           end
         end,
