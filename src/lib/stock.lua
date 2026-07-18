@@ -213,23 +213,9 @@ end
 -- Multiplies each slot's item count so the turtle crafts batchSize results at once.
 function Stock.getItemsForRecipe(recipe, batchSize)
   batchSize = batchSize or 1
-  local requiredItems = Recipes.getRequiredItemsPlainList(recipe)
-  -- Scale totals check to full batch amount
-  local scaledItems = {}
-  for _, item in pairs(requiredItems) do
-    if not item.catalyst then
-      table.insert(scaledItems, {
-        name = item.name,
-        nbt = item.nbt,
-        displayName = item.displayName,
-        count = item.count * batchSize,
-      })
-    end
-  end
-  local _, missingItems = Stock.getMissingItems(scaledItems)
-  if #missingItems > 0 then
-    Logger.raiseError("Not enough items for craft")
-  end
+  -- No up-front Stock View shortage check here: it cost a full view
+  -- listing (slow with aggregating peripherals) per chunk, and the slot
+  -- assignment below already raises a truthful per-item error on shortage.
 
   -- Index all stock slots by item name, tracking remaining count per slot.
   -- This allows recipe positions to be spread across multiple source slots

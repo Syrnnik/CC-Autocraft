@@ -10,6 +10,10 @@ local Utils = require("lib.utils")
 -- and return these virtual slot numbers.
 local MultiInv = {}
 
+-- Per-port slot-count cache: static sizes live for the session, synthetic
+-- (listing-derived) sizes for a few seconds. See MultiInv.wrap.
+local sizeCache = {}
+
 -- Wraps a list of peripheral port names as one inventory.
 -- Returns inv, name:
 --   * one port  -> the raw wrapped peripheral and its port name (zero
@@ -30,28 +34,45 @@ function MultiInv.wrap(ports)
   for i, port in ipairs(ports) do
     local p = Utils.wrapPeripheral(port)
     local size
+    local cached = sizeCache[port]
     if p.size then
-      size = p.size()
+      -- A peripheral's slot count never changes while it exists, so one
+      -- size() call per port per session is enough. Re-wrapping happens on
+      -- every stock operation; without the cache that was N peripheral
+      -- calls per wrap.
+      if cached and cached.static then
+        size = cached.size
+      else
+        size = p.size()
+        sizeCache[port] = { size = size, static = true }
+      end
     else
       -- Listing-only peripherals (custom stock views with
       -- stock()/getStockItemDetail but no size(), e.g. a Create stock
       -- ticker) join with a synthetic slot space spanning their current
-      -- listing, so they can merge into the view instead of breaking it.
-      local lister = p.stock or p.list
-      if not lister then
-        error(
-          "Peripheral '"
-            .. port
-            .. "' has no size()/list()/stock(); cannot join a"
-            .. " multi-inventory",
-          0
-        )
-      end
-      size = 0
-      for slot in pairs(lister() or {}) do
-        if type(slot) == "number" and slot > size then
-          size = slot
+      -- listing. That listing may be expensive, so the synthetic size is
+      -- cached for a few seconds.
+      local now = os.epoch("utc")
+      if cached and not cached.static and now - cached.at < 5000 then
+        size = cached.size
+      else
+        local lister = p.stock or p.list
+        if not lister then
+          error(
+            "Peripheral '"
+              .. port
+              .. "' has no size()/list()/stock(); cannot join a"
+              .. " multi-inventory",
+            0
+          )
         end
+        size = 0
+        for slot in pairs(lister() or {}) do
+          if type(slot) == "number" and slot > size then
+            size = slot
+          end
+        end
+        sizeCache[port] = { size = size, static = false, at = now }
       end
     end
     members[i] = { port = port, p = p, size = size }
@@ -142,8 +163,9 @@ function MultiInv.wrap(ports)
       return m.p.pullItems(fromName, fromSlot, limit, s)
     end
     -- No target slot: fill members in order until the request is
-    -- satisfied. A drained source or a full member just returns 0 and the
-    -- loop moves on, so no state has to be tracked between calls.
+    -- satisfied. A full member returns 0 and the loop moves on; once
+    -- items HAVE moved and a member pulls nothing, the source slot is
+    -- drained -- stop instead of asking every remaining member.
     local moved = 0
     for _, m in ipairs(members) do
       local remaining = limit and (limit - moved) or nil
@@ -151,7 +173,11 @@ function MultiInv.wrap(ports)
         break
       end
       if m.p.pullItems then
-        moved = moved + m.p.pullItems(fromName, fromSlot, remaining)
+        local n = m.p.pullItems(fromName, fromSlot, remaining)
+        moved = moved + n
+        if n == 0 and moved > 0 then
+          break
+        end
       end
     end
     return moved

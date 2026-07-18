@@ -334,14 +334,37 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot, skipSlots)
   )
 
   if not isSpecificSlot then
-    -- Pull everything from all crafter slots (batch craft fills multiple
-    -- slots); all pulls run concurrently.
+    -- Pull the crafter's occupied slots (batch craft fills several); one
+    -- list() beats 16 blind pulls -- especially into a multi-storage
+    -- Stock Out where every pull walks the member list. Falls back to the
+    -- blind sweep when the turtle's inventory can't be listed.
+    local crafterPort = getCrafter()
+    local occupied = nil
+    local cp = crafterPort and peripheral.wrap(crafterPort)
+    if cp and type(cp.list) == "function" then
+      local ok, listing = pcall(cp.list)
+      if ok and type(listing) == "table" then
+        occupied = listing
+      end
+    end
+
     local tasks = {}
-    for slot = 1, 16 do
-      if not (skipSlots and skipSlots[slot]) then
-        local s = slot
-        tasks[#tasks + 1] = function()
-          toInterface.pullItems(getCrafter(), s)
+    if occupied then
+      for slot in pairs(occupied) do
+        if not (skipSlots and skipSlots[slot]) then
+          local s = slot
+          tasks[#tasks + 1] = function()
+            toInterface.pullItems(crafterPort, s)
+          end
+        end
+      end
+    else
+      for slot = 1, 16 do
+        if not (skipSlots and skipSlots[slot]) then
+          local s = slot
+          tasks[#tasks + 1] = function()
+            toInterface.pullItems(crafterPort, s)
+          end
         end
       end
     end
