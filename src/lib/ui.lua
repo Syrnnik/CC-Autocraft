@@ -119,7 +119,10 @@ local stripMod = Utils.stripMod
 -- Pretty fallback for ids without a stored displayName:
 -- "create:molten_iron" -> "Molten Iron".
 local function prettifyId(name)
-  local s = stripMod(name):gsub("_", " ")
+  local s = stripMod(name)
+  -- Dotted ids ("item.avaritia.dur_singularity") keep only the last segment.
+  s = s:match("([^.]+)$") or s
+  s = s:gsub("_", " ")
   return (
     s:gsub("(%a)(%w*)", function(head, tail)
       return head:upper() .. tail
