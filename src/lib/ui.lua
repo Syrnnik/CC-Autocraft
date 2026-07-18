@@ -104,6 +104,7 @@ local state = {
   craftProgress = 0, -- 0-100
   craftEta = nil, -- seconds left (estimate before start, live rate after)
   craftStartAt = nil, -- os.epoch("utc") when the craft started
+  craftPreviewing = false, -- Plan dry run in progress (Craft blocked)
   craftPlanning = false, -- true while plan is being built
   craftPlan = nil, -- list of { name, craftsCount, recipe } for display
   craftQueue = nil, -- { name, count }[] when crafting from checklist queue; nil = single
@@ -2098,27 +2099,38 @@ local function drawCraftScreen()
   if notStarted then
     -- Craft button only in single-item mode (queue auto-starts and clears itself)
     if not state.craftQueue then
-      mkBtn(L, cur, "Craft", colors.black, colors.cyan, function()
-        local name = state.craftItem
-        local count = state.craftCount
-        local key = state.craftKey
-        local isFluid = state.craftIsFluid
-        prepareCraftState(name, count)
-        pendingTask = makeCraftTask(name, count, key, isFluid)
-      end)
-
-      -- Dry run: plan + validate + time estimate, no crafting.
-      mkBtn(
-        L + #" Craft " + 1,
-        cur,
-        "Plan",
-        colors.black,
-        colors.lightBlue,
-        function()
+      -- Craft is blocked (rendered inert) while a Plan dry run works, so a
+      -- stray tap can't start crafting mid-planning.
+      if state.craftPreviewing then
+        at(L, cur, " Craft ", colors.lightGray, colors.gray)
+      else
+        mkBtn(L, cur, "Craft", colors.black, colors.cyan, function()
           local name = state.craftItem
           local count = state.craftCount
           local key = state.craftKey
-          state.craftMsg = "Planning..."
+          local isFluid = state.craftIsFluid
+          prepareCraftState(name, count)
+          pendingTask = makeCraftTask(name, count, key, isFluid)
+        end)
+      end
+
+      -- Dry run: plan + validate + time estimate, no crafting. The label
+      -- switches to "Planning" while the run is in flight.
+      mkBtn(
+        L + #" Craft " + 1,
+        cur,
+        state.craftPreviewing and "Planning" or "Plan",
+        colors.black,
+        state.craftPreviewing and colors.green or colors.lightGray,
+        function()
+          if state.craftPreviewing then
+            return
+          end
+          local name = state.craftItem
+          local count = state.craftCount
+          local key = state.craftKey
+          state.craftPreviewing = true
+          state.craftMsg = nil
           state.craftMsgIsErr = false
           state.craftMsgIsDone = false
           state.craftEta = nil
@@ -2126,6 +2138,7 @@ local function drawCraftScreen()
             local rootRecipe = key and Recipes.getRecipeByKey(key) or nil
             local ok, plan, missing, est =
               pcall(Crafting.previewCraft, name, count, rootRecipe)
+            state.craftPreviewing = false
             if not ok then
               state.craftMsg = tostring(plan)
               state.craftMsgIsErr = true
@@ -2226,16 +2239,12 @@ local function drawCraftScreen()
   )
   at(barX + 1 + inner, barRow, "]", colors.gray, colors.black)
 
-  -- Remaining time under the bar: plan estimate before the first run,
-  -- live actual-rate extrapolation after (refreshed on every run).
+  -- Remaining time under the bar. A Plan dry run (craft not started yet)
+  -- shows "Estimated time"; a running craft shows "Time left" -- the plan
+  -- estimate at first, live actual-rate extrapolation after.
   if state.craftEta then
-    at(
-      L,
-      H,
-      "Time left: " .. fmtTime(state.craftEta),
-      colors.lightGray,
-      colors.black
-    )
+    local label = state.craftStartAt and "Time left: " or "Estimated time: "
+    at(L, H, label .. fmtTime(state.craftEta), colors.lightGray, colors.black)
   end
 end
 

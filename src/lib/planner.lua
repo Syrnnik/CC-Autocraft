@@ -33,11 +33,12 @@ function Planner.getAllIngredients(recipe)
 end
 
 -- Recipe lookup that understands prefixed fluid names and variant keys.
--- Plain names resolve to item recipes without an output nbt only (a fluid
--- recipe or a variant recipe must not shadow the plain item and vice
--- versa); "fluid:" names resolve to fluid-result recipes; "name\0nbt" keys
--- resolve to the recipe producing that exact variant.
-local function resolveRecipe(recipes, name)
+-- "fluid:" names resolve to fluid-result recipes. "name\0nbt" keys resolve
+-- to the recipe producing that exact variant: by output nbt when the recipe
+-- recorded one, else by the variant's displayName (recipes learned before
+-- output-nbt tracking still resolve this way). Plain names prefer recipes
+-- without an output nbt, falling back to any recipe with that item id.
+local function resolveRecipe(recipes, name, displayName)
   if Fluids.isFluidName(name) then
     local fluidName = Fluids.stripPrefix(name)
     for _, recipe in pairs(recipes) do
@@ -58,23 +59,36 @@ local function resolveRecipe(recipes, name)
         return recipe
       end
     end
+    if displayName then
+      for _, recipe in pairs(recipes) do
+        if
+          recipe.name == base
+          and recipe.displayName == displayName
+          and recipe.resultType ~= "fluid"
+        then
+          return recipe
+        end
+      end
+    end
     return nil
   end
-  local function plainMatch(recipe)
-    return recipe.name == name
-      and recipe.resultType ~= "fluid"
-      and recipe.nbt == nil
-  end
+  local fallback = nil
   local exact = recipes[name]
-  if exact and plainMatch(exact) then
-    return exact
+  if exact and exact.name == name and exact.resultType ~= "fluid" then
+    if exact.nbt == nil then
+      return exact
+    end
+    fallback = exact
   end
   for _, recipe in pairs(recipes) do
-    if plainMatch(recipe) then
-      return recipe
+    if recipe.name == name and recipe.resultType ~= "fluid" then
+      if recipe.nbt == nil then
+        return recipe
+      end
+      fallback = fallback or recipe
     end
   end
-  return nil
+  return fallback
 end
 
 -- Plan-space name of what a recipe produces: "fluid:<id>" for fluid
@@ -118,7 +132,9 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
 
   -- useStock: for sub-crafts, consume from virtual stock first, craft only
   -- the remainder. For the root item always craft the full requested amount.
-  local function expand(name, count, useStock, explicitRecipe)
+  -- displayName: the ingredient's variant name, used to resolve variant
+  -- recipes that predate output-nbt tracking.
+  local function expand(name, count, useStock, explicitRecipe, displayName)
     local stillNeeded = count
 
     if useStock then
@@ -131,7 +147,8 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
       available[name] = 0
     end
 
-    local recipe = explicitRecipe or resolveRecipe(allRecipes, name)
+    local recipe = explicitRecipe
+      or resolveRecipe(allRecipes, name, displayName)
     if not recipe then
       -- Base material: no recipe, must come from stock.
       return
@@ -160,7 +177,7 @@ function Planner.buildCraftPlan(recipeName, neededCount, totals, rootRecipe)
     onStack[name] = true
     for _, ingredient in pairs(ingredients) do
       local needed = ingredient.catalyst and 1 or ingredient.count * craftsCount
-      expand(ingredient.name, needed, true)
+      expand(ingredient.name, needed, true, nil, ingredient.displayName)
     end
     onStack[name] = nil
 
@@ -283,8 +300,11 @@ function Planner.validatePlan(plan, totals, maxDmg)
       end
     end
 
-    -- Account for what this step produces (items or mB of a fluid)
-    local name = producedName(step.recipe)
+    -- Account for what this step produces under its PLAN-SPACE name (the
+    -- key consumers reference) -- a variant step resolved via displayName
+    -- fallback produces the requested variant even though the stored
+    -- recipe carries no output nbt.
+    local name = step.name or producedName(step.recipe)
     virtual[name] = (virtual[name] or 0) + step.recipe.count * craftsCount
   end
 
