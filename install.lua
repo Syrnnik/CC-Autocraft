@@ -43,6 +43,7 @@ local COMPUTER_FILES = {
   "migrate_recipes.lua",
   "monitor.lua",
   "new_craft.lua",
+  "probe.lua",
   "scan_names.lua",
 }
 
