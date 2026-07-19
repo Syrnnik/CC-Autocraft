@@ -132,6 +132,17 @@ local function pushRecipeFluids(recipe, batchSize, resolvePort)
   return cycles
 end
 
+-- Deposits a source slot into stock. When the stock is a multi-inventory
+-- and the item's id is known, the storage already holding that item is
+-- preferred (results land next to their kin -- e.g. the drawer bank --
+-- instead of the first storage in role order).
+local function pullToStock(stockOut, itemName, fromPort, fromSlot, limit)
+  if itemName and stockOut.pullItemsPreferring then
+    return stockOut.pullItemsPreferring(itemName, fromPort, fromSlot, limit)
+  end
+  return stockOut.pullItems(fromPort, fromSlot, limit)
+end
+
 -- Snapshot of a machine's item slots: [slot] = { name, count }. Empty for
 -- peripherals without an item inventory.
 local function itemLevels(port)
@@ -350,11 +361,12 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot, skipSlots)
 
     local tasks = {}
     if occupied then
-      for slot in pairs(occupied) do
+      for slot, item in pairs(occupied) do
         if not (skipSlots and skipSlots[slot]) then
           local s = slot
+          local name = item.name
           tasks[#tasks + 1] = function()
-            toInterface.pullItems(crafterPort, s)
+            pullToStock(toInterface, name, crafterPort, s)
           end
         end
       end
@@ -953,13 +965,11 @@ function Crafting.runMachineCycle(
     while itemsPulled < totalNeeded do
       local progressed = false
       for _ = 1, steps do
-        local resultSlot = findResultSlot(
-          Utils.wrapPeripheral(resultPort).list(),
-          itemBaseline,
-          inputsToResult
-        )
+        local listing = Utils.wrapPeripheral(resultPort).list()
+        local resultSlot = findResultSlot(listing, itemBaseline, inputsToResult)
         if resultSlot then
-          local n = stockOut.pullItems(resultPort, resultSlot)
+          local resultName = listing[resultSlot] and listing[resultSlot].name
+          local n = pullToStock(stockOut, resultName, resultPort, resultSlot)
           if n > 0 then
             -- The stack (baseline leftovers included, if the result
             -- stacked onto them) is gone; the slot is fresh again.
@@ -1016,8 +1026,8 @@ function Crafting.runMachineCycle(
       seen[item.processor] = true
       local port = resolveItemPort(item.processor)
       clearTasks[#clearTasks + 1] = function()
-        for slot, _ in pairs(Utils.wrapPeripheral(port).list()) do
-          stockOut.pullItems(port, slot)
+        for slot, leftover in pairs(Utils.wrapPeripheral(port).list()) do
+          pullToStock(stockOut, leftover.name, port, slot)
         end
       end
     end
@@ -1237,8 +1247,9 @@ function Crafting.processCraft(recipe, batchSize, onEach)
         local tasks = {}
         for _, cat in ipairs(catalysts) do
           local slot = cat.crafterSlot
+          local name = cat.name
           tasks[#tasks + 1] = function()
-            stockOut.pullItems(getCrafter(), slot)
+            pullToStock(stockOut, name, getCrafter(), slot)
           end
         end
         Utils.runParallel(tasks)

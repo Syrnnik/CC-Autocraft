@@ -14,6 +14,34 @@ local MultiInv = {}
 -- (listing-derived) sizes for a few seconds. See MultiInv.wrap.
 local sizeCache = {}
 
+-- Per-port "which item ids does this storage hold" cache, used by
+-- pullItemsPreferring to route deposits to the member already holding the
+-- item (a drawer bank) instead of the first member in role order.
+local holdsCache = {}
+local HOLDS_TTL_MS = 5000
+
+local function memberHolds(member, itemName)
+  local cached = holdsCache[member.port]
+  local now = os.epoch("utc")
+  if not cached or now - cached.at >= HOLDS_TTL_MS then
+    local names = {}
+    local lister = member.p.stock or member.p.list
+    if lister then
+      local ok, listing = pcall(lister)
+      if ok and type(listing) == "table" then
+        for _, item in pairs(listing) do
+          if item.name then
+            names[item.name] = true
+          end
+        end
+      end
+    end
+    cached = { at = now, names = names }
+    holdsCache[member.port] = cached
+  end
+  return cached.names[itemName] == true
+end
+
 -- Wraps a list of peripheral port names as one inventory.
 -- Returns inv, name:
 --   * one port  -> the raw wrapped peripheral and its port name (zero
@@ -178,6 +206,41 @@ function MultiInv.wrap(ports)
         if n == 0 and moved > 0 then
           break
         end
+      end
+    end
+    return moved
+  end
+
+  -- Like pullItems without a target slot, but members that ALREADY hold
+  -- `itemName` are tried first: their own insertion logic tops up the
+  -- existing stacks (drawers, chests), so items land next to their kin
+  -- instead of in whatever member comes first in role order. Falls back
+  -- to the remaining members for any leftovers.
+  function inv.pullItemsPreferring(itemName, fromName, fromSlot, limit)
+    local moved = 0
+    local function pullInto(m)
+      local remaining = limit and (limit - moved) or nil
+      if remaining and remaining <= 0 then
+        return true
+      end
+      if m.p.pullItems then
+        local n = m.p.pullItems(fromName, fromSlot, remaining)
+        moved = moved + n
+        if n == 0 and moved > 0 then
+          return true -- source drained
+        end
+      end
+      return false
+    end
+
+    for _, m in ipairs(members) do
+      if memberHolds(m, itemName) and pullInto(m) then
+        return moved
+      end
+    end
+    for _, m in ipairs(members) do
+      if not memberHolds(m, itemName) and pullInto(m) then
+        return moved
       end
     end
     return moved
