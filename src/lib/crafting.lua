@@ -1174,10 +1174,18 @@ function Crafting.processCraft(recipe, batchSize, onEach)
       done = done + ranCycles
     end
   else
-    -- The crafter and the stock claim+push cycle stay exclusive for the
-    -- whole batch: catalysts sit in the crafter between chunks and every
-    -- chunk lists stock and claims slots from it.
-    lockStock()
+    -- The TURTLE is exclusive for the whole batch (catalysts sit in its
+    -- grid between chunks, and two interleaved crafter steps would mix
+    -- their grids), but the global stock lock is NOT: it is held only for
+    -- the claim+push moments. Holding it across the turtle roundtrip used
+    -- to stall every machine step's claim for the whole crafter batch,
+    -- capping plan-wide concurrency at 2-3 active steps.
+    local crafterPort = getCrafter()
+    if not crafterPort then
+      Logger.raiseError("Role 'Crafter' is not configured")
+    end
+    local crafterLock = { crafterPort }
+    lockMachines(crafterLock)
     local okBatch, errBatch = pcall(function()
       local stockIn = stockInInv()
       local stockOut = stockOutInv()
@@ -1191,15 +1199,25 @@ function Crafting.processCraft(recipe, batchSize, onEach)
           break
         end
       end
-      local catalysts = hasCatalysts and Stock.getCatalystItemsForRecipe(recipe)
-        or {}
+      local catalysts = {}
+      if hasCatalysts then
+        lockStock()
+        local okCat, catsOrErr = pcall(function()
+          local cats = Stock.getCatalystItemsForRecipe(recipe)
+          if #cats > 0 then
+            Crafting.pushItemsToCrafter(cats, stockIn)
+          end
+          return cats
+        end)
+        unlockStock()
+        if not okCat then
+          error(catsOrErr, 0)
+        end
+        catalysts = catsOrErr
+      end
       local catalystSlots = {}
       for _, cat in ipairs(catalysts) do
         catalystSlots[cat.crafterSlot] = true
-      end
-
-      if #catalysts > 0 then
-        Crafting.pushItemsToCrafter(catalysts, stockIn)
       end
 
       local maxBatch = Stock.getMaxBatchForRecipe(recipe)
@@ -1209,13 +1227,49 @@ function Crafting.processCraft(recipe, batchSize, onEach)
           local chunk = math.min(maxBatch, batchSize - done)
           local startedAt = Config.COUNT_CRAFT_TIME and os.epoch("utc") or nil
           -- Debug phase timing: shows where a chunk's wall time goes
-          -- (claim = stock listing+assignment, craft = push+turtle
+          -- (claim = stock listing+assignment+push, craft = turtle
           -- roundtrip, collect = pulling results back).
           local d0 = Config.IS_DEBUG_MODE and os.epoch("utc") or nil
-          local stockItems = Stock.getItemsForRecipe(recipe, chunk)
+
+          -- Claim + push under the stock lock...
+          lockStock()
+          local okClaim, claimedOrErr = pcall(function()
+            if Config.CLEAR_CRAFTER_BEFORE_CRAFT then
+              local tasks = {}
+              for slot = 1, 16 do
+                local s = slot
+                tasks[#tasks + 1] = function()
+                  stockIn.pullItems(crafterPort, s)
+                end
+              end
+              Utils.runParallel(tasks)
+            end
+            local stockItems = Stock.getItemsForRecipe(recipe, chunk)
+            Crafting.pushItemsToCrafter(stockItems, stockIn)
+            return stockItems
+          end)
+          unlockStock()
+          if not okClaim then
+            error(claimedOrErr, 0)
+          end
           local d1 = d0 and os.epoch("utc")
-          Crafting.craft(stockItems, stockIn)
+
+          -- ...then the turtle roundtrip WITHOUT it, so machine steps can
+          -- claim and run while the turtle crafts.
+          Network.sendEvent(Config.CRAFTER_NETWORK_ID, networkEvents.CRAFT)
+          Logger.printDebug("Waiting for crafter..")
+          local senderID, msg = Network.receiveEvent(Config.CRAFT_TIMEOUT)
+          if not senderID or msg then
+            Logger.printError(
+              msg or "Crafter did not respond (timeout or offline)"
+            )
+            Crafting.returnRecipeItems(claimedOrErr, stockIn)
+            Logger.raiseError(
+              msg or "Crafter did not respond (timeout or offline)"
+            )
+          end
           local d2 = d0 and os.epoch("utc")
+
           Crafting.getCraftedItem(stockOut, false, catalystSlots)
           if d0 then
             local d3 = os.epoch("utc")
@@ -1249,7 +1303,7 @@ function Crafting.processCraft(recipe, batchSize, onEach)
           local slot = cat.crafterSlot
           local name = cat.name
           tasks[#tasks + 1] = function()
-            pullToStock(stockOut, name, getCrafter(), slot)
+            pullToStock(stockOut, name, crafterPort, slot)
           end
         end
         Utils.runParallel(tasks)
@@ -1259,7 +1313,7 @@ function Crafting.processCraft(recipe, batchSize, onEach)
         error(err, 0)
       end
     end)
-    unlockStock()
+    unlockMachines(crafterLock)
     if not okBatch then
       error(errBatch, 0)
     end
