@@ -1280,13 +1280,17 @@ end
 -- onPlan(plan): called once after the plan is built, before execution starts.
 -- onStepDone(stepName): called after each full plan step completes. Steps can
 --   finish out of plan order.
+-- onStepActive(stepName, isActive): called when a step starts physically
+-- crafting a batch (true) and when it returns to waiting/finishes (false),
+-- so the UI can surface what is being worked on RIGHT NOW.
 function Crafting.craftItem(
   recipeName,
   count,
   onStep,
   onPlan,
   onStepDone,
-  rootRecipe
+  rootRecipe,
+  onStepActive
 )
   Logger.printInfo(string.format("Planning '%s' x%d..", recipeName, count))
 
@@ -1436,8 +1440,10 @@ function Crafting.craftItem(
               remaining
             )
           )
+          notify(onStepActive, step.name, true)
           local ok, err =
             pcall(Crafting.processCraft, step.recipe, batch, onEach)
+          notify(onStepActive, step.name, false)
           if ok then
             remaining = remaining - batch
             transientRetries = 0

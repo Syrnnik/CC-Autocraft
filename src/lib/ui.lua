@@ -1855,6 +1855,19 @@ local function updatePlanStepProgress(stepName, craftsDone)
   end
 end
 
+-- Marks a plan step as actively crafting (shown at the top of the tree).
+local function setPlanStepActive(stepName, isActive)
+  if not state.craftPlan then
+    return
+  end
+  for _, s in ipairs(state.craftPlan) do
+    if s.name == stepName then
+      s.active = isActive or nil
+      return
+    end
+  end
+end
+
 -- Removes a completed step from the on-screen plan. Plan execution is
 -- pipelined, so steps can finish out of order -- remove by name, not the head.
 local function removePlanStep(stepName)
@@ -1919,7 +1932,13 @@ local function makeCraftTask(name, count, key, isFluid)
           redraw()
         end
       end,
-      rootRecipe
+      rootRecipe,
+      function(stepName, isActive)
+        setPlanStepActive(stepName, isActive)
+        if redraw then
+          redraw()
+        end
+      end
     )
     if ok then
       state.craftPlan = nil
@@ -1983,6 +2002,13 @@ local function makeCraftQueueTask(queue)
         end,
         function(stepName)
           removePlanStep(stepName)
+          if redraw then
+            redraw()
+          end
+        end,
+        nil,
+        function(stepName, isActive)
+          setPlanStepActive(stepName, isActive)
           if redraw then
             redraw()
           end
@@ -2220,17 +2246,37 @@ local function drawCraftScreen()
     elseif state.craftPlanning then
       at(L, planStart, "Planning...", colors.yellow, colors.black)
     elseif state.craftPlan then
-      for i, step in ipairs(state.craftPlan) do
+      -- Actively crafting steps first (highlighted), waiting ones below --
+      -- so what the system is doing RIGHT NOW sits at the top of the tree.
+      local ordered = {}
+      for _, step in ipairs(state.craftPlan) do
+        if step.active then
+          table.insert(ordered, step)
+        end
+      end
+      for _, step in ipairs(state.craftPlan) do
+        if not step.active then
+          table.insert(ordered, step)
+        end
+      end
+
+      for i, step in ipairs(ordered) do
         local row = planStart + i - 1
         if row > planEnd then
           break
         end
-        local label = "- "
+        local label = (step.active and "> " or "- ")
           .. displayOrResolve(step.displayName, step.name)
           .. " x"
           .. step.remaining
           .. (step.isFluid and "mB" or "")
-        at(L, row, truncate(label, W - L), colors.lightGray, colors.black)
+        at(
+          L,
+          row,
+          truncate(label, W - L),
+          step.active and colors.lime or colors.lightGray,
+          colors.black
+        )
       end
     end
   end
