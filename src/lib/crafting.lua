@@ -350,17 +350,42 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot, skipSlots)
     -- Stock Out where every pull walks the member list. Falls back to the
     -- blind sweep when the turtle's inventory can't be listed.
     local crafterPort = getCrafter()
-    local occupied = nil
     local cp = crafterPort and peripheral.wrap(crafterPort)
-    if cp and type(cp.list) == "function" then
-      local ok, listing = pcall(cp.list)
-      if ok and type(listing) == "table" then
-        occupied = listing
+    local function listOccupied()
+      if cp and type(cp.list) == "function" then
+        local ok, listing = pcall(cp.list)
+        if ok and type(listing) == "table" then
+          return listing
+        end
       end
+      return nil
     end
 
-    local tasks = {}
-    if occupied then
+    -- Backpressure on a full stock: results that do not fit stay in the
+    -- crafter, so we retry the deposit -- streaming consumers keep eating
+    -- intermediates and free space up. Only a full timeout window with
+    -- the output still stuck is a real "storage full" failure.
+    local startedAt = os.epoch("utc")
+    local warnedFull = false
+    while true do
+      local occupied = listOccupied()
+
+      if not occupied then
+        -- Blind sweep (no way to verify afterwards): single pass.
+        local tasks = {}
+        for slot = 1, 16 do
+          if not (skipSlots and skipSlots[slot]) then
+            local s = slot
+            tasks[#tasks + 1] = function()
+              toInterface.pullItems(crafterPort, s)
+            end
+          end
+        end
+        Utils.runParallel(tasks)
+        return
+      end
+
+      local tasks = {}
       for slot, item in pairs(occupied) do
         if not (skipSlots and skipSlots[slot]) then
           local s = slot
@@ -370,18 +395,40 @@ function Crafting.getCraftedItem(toInterfaceName, isSpecificSlot, skipSlots)
           end
         end
       end
-    else
-      for slot = 1, 16 do
-        if not (skipSlots and skipSlots[slot]) then
-          local s = slot
-          tasks[#tasks + 1] = function()
-            toInterface.pullItems(crafterPort, s)
+      if #tasks == 0 then
+        return
+      end
+      Utils.runParallel(tasks)
+
+      -- Verify: anything (besides catalysts) still in the crafter means
+      -- the stock rejected it.
+      local after = listOccupied()
+      local leftover = false
+      if after then
+        for slot in pairs(after) do
+          if not (skipSlots and skipSlots[slot]) then
+            leftover = true
+            break
           end
         end
       end
+      if not leftover then
+        return
+      end
+
+      if
+        (os.epoch("utc") - startedAt) / 1000 >= Config.MACHINE_CRAFT_TIMEOUT
+      then
+        Logger.raiseError("Stock full: crafter output does not fit in storage")
+      end
+      if not warnedFull then
+        warnedFull = true
+        Logger.printWarning(
+          "Stock full: waiting for space to store crafter output.."
+        )
+      end
+      os.sleep(2)
     end
-    Utils.runParallel(tasks)
-    return
   end
 
   local destSlot = Crafting.getSlotToPutItem()
@@ -961,6 +1008,7 @@ function Crafting.runMachineCycle(
     local totalNeeded = cycles * (recipe.count or 1)
     local itemsPulled = 0
     local cyclesDone = 0
+    local warnedFull = false
 
     while itemsPulled < totalNeeded do
       local progressed = false
@@ -970,6 +1018,12 @@ function Crafting.runMachineCycle(
         if resultSlot then
           local resultName = listing[resultSlot] and listing[resultSlot].name
           local n = pullToStock(stockOut, resultName, resultPort, resultSlot)
+          if n == 0 and not warnedFull then
+            warnedFull = true
+            Logger.printWarning(
+              "Result found but not deposited (stock full?) -- waiting"
+            )
+          end
           if n > 0 then
             -- The stack (baseline leftovers included, if the result
             -- stacked onto them) is gone; the slot is fresh again.
@@ -1577,7 +1631,24 @@ function Crafting.previewCraft(recipeName, count, rootRecipe)
   if Config.COUNT_CRAFT_TIME then
     estimate = Planner.estimateTime(plan)
   end
-  return plan, missing, estimate
+
+  -- Early storage-space warning: the craft still runs (backpressure holds
+  -- it together), but the user learns up front that the output may not
+  -- fit. Skipped when the storage already holds the output item -- dense
+  -- storages absorb far more than free-slot math can see.
+  local spaceWarning = nil
+  local rootStep = plan[#plan]
+  local okSpace, free, needSlots, holdsOutput =
+    pcall(Stock.estimateOutputSpace, rootStep.recipe, count)
+  if okSpace and free and not holdsOutput and free < needSlots then
+    spaceWarning = string.format(
+      "Warning: output may not fit in storage:\nneeds ~%d slots, ~%d free",
+      needSlots,
+      free
+    )
+  end
+
+  return plan, missing, estimate, spaceWarning
 end
 
 return Crafting

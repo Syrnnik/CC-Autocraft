@@ -714,43 +714,36 @@ function Stock.fixSlotFragmentation()
   local freed = 0
   local mergeTasks = {}
   for _, group in pairs(groups) do
-    local maxCount = math.max(1, group.maxCount)
     local slots = group.slots
-    if #slots > math.ceil(sumCounts(slots) / maxCount) then
+    if #slots > 1 then
       mergeTasks[#mergeTasks + 1] = function()
-        -- Fullest stacks first as merge targets, smallest as sources.
+        -- Largest piles first as merge targets: dense storages (drawer
+        -- banks, storage controllers) report outsized per-slot counts, so
+        -- items naturally consolidate INTO them, then into other slots
+        -- already holding the item, and only the remainder stays where it
+        -- was, stack-merged. Per-slot capacity is NOT queryable through
+        -- the CC API, so it is discovered empirically by pushing -- which
+        -- keeps this fully mod-agnostic. Smallest stacks act as sources.
         table.sort(slots, function(a, b)
           return a.count > b.count
         end)
         local i, j = 1, #slots
         while i < j do
           local dst, src = slots[i], slots[j]
-          local space = maxCount - dst.count
-          if space <= 0 then
-            i = i + 1
-          elseif src.count <= 0 then
+          if src.count <= 0 then
             j = j - 1
           else
-            local moved = inv.pushItems(
-              invName,
-              src.slot,
-              math.min(space, src.count),
-              dst.slot
-            )
+            local moved = inv.pushItems(invName, src.slot, src.count, dst.slot)
             if moved == 0 then
-              -- Same display name but unstackable data (stored energy,
-              -- damage, ...) or the slot changed under us: skip this
-              -- source and try the next one.
-              j = j - 1
+              -- Target can't take any more (full slot, or unstackable
+              -- data like stored energy): advance to the next target.
+              i = i + 1
             else
               dst.count = dst.count + moved
               src.count = src.count - moved
               if src.count <= 0 then
                 freed = freed + 1
                 j = j - 1
-              end
-              if dst.count >= maxCount then
-                i = i + 1
               end
             end
           end
@@ -761,6 +754,29 @@ function Stock.fixSlotFragmentation()
   runParallelBatched(mergeTasks)
 
   return freed
+end
+
+-- Rough "will the final output fit" estimate for the Plan dry run: counts
+-- genuinely free slots in the slot-addressable storage union. When the
+-- storage already holds the output item somewhere, dense storages may
+-- absorb far more than free-slot math suggests, so callers should skip
+-- the warning in that case (holdsOutput).
+function Stock.estimateOutputSpace(recipe, count)
+  local okInv, inv = pcall(slotInventory)
+  if not okInv or not inv then
+    return nil
+  end
+  local occupied = 0
+  local holdsOutput = false
+  for _, item in pairs(inv.list()) do
+    occupied = occupied + 1
+    if item.name == recipe.name then
+      holdsOutput = true
+    end
+  end
+  local free = math.max(0, inv.size() - occupied)
+  local needSlots = math.ceil(count / math.max(1, recipe.maxCount or 64))
+  return free, needSlots, holdsOutput
 end
 
 -- Like getTotals(), but damageable items are counted by remaining uses

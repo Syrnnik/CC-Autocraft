@@ -2179,7 +2179,7 @@ local function drawCraftScreen()
           state.craftEta = nil
           pendingTask = function()
             local rootRecipe = key and Recipes.getRecipeByKey(key) or nil
-            local ok, plan, missing, est =
+            local ok, plan, missing, est, spaceWarning =
               pcall(Crafting.previewCraft, name, count, rootRecipe)
             state.craftPreviewing = false
             if not ok then
@@ -2190,6 +2190,12 @@ local function drawCraftScreen()
             state.craftEta = est
             if #missing > 0 then
               state.craftMsg = Crafting.formatMissing(missing)
+              state.craftMsgIsErr = true
+              state.craftMsgIsDone = false
+            elseif spaceWarning then
+              -- Everything exists, but the output may not fit: crafting
+              -- is still allowed (backpressure holds it together).
+              state.craftMsg = spaceWarning
               state.craftMsgIsErr = true
               state.craftMsgIsDone = false
             else
