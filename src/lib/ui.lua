@@ -1104,9 +1104,12 @@ local function drawNewRecipe()
         local isSelected = state.selectedItemIdx == i
         local captI = i
 
-        -- Item row: "  name" or "  name > machine". Per-slot displayName
-        -- first: same-id NBT variants must show their own names.
+        -- Item row: "  name x2" or "  name x2 > machine". Per-slot
+        -- displayName first: same-id NBT variants must show their own
+        -- names.
         local itemName = displayOrResolve(item.displayName, item.name)
+          .. " x"
+          .. (item.count or 1)
         local lineText
         if item.processor then
           lineText = "  " .. itemName .. " > " .. machineLabel(item.processor)
