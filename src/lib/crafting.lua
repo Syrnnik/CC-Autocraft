@@ -151,7 +151,8 @@ local function itemLevels(port)
     return {}
   end
   local snapshot = {}
-  for slot, item in pairs(p.list()) do
+  -- Some modded peripherals return nil instead of an empty table.
+  for slot, item in pairs(p.list() or {}) do
     snapshot[slot] = { name = item.name, count = item.count }
   end
   return snapshot
@@ -490,7 +491,7 @@ end
 -- under whatever name the shared store happens to hold.
 function Crafting.getInterfaceItems()
   local interface = Utils.wrapPeripheral(interfaceName())
-  local listing = interface.list()
+  local listing = interface.list() or {}
   local items = {}
   for _, slot in ipairs(patternSlots()) do
     local item = listing[slot]
@@ -629,7 +630,7 @@ function Crafting.craftNewMachineRecipe(
       local resultSlot = nil
       if resultHasItems then
         resultSlot = findResultSlot(
-          Utils.wrapPeripheral(resultProcessor).list(),
+          Utils.wrapPeripheral(resultProcessor).list() or {},
           itemBaseline,
           inputsToResult
         )
@@ -720,7 +721,7 @@ function Crafting.craftNewMachineRecipe(
       seen[item.processor] = true
       local proc = item.processor
       clearTasks[#clearTasks + 1] = function()
-        for slot, _ in pairs(Utils.wrapPeripheral(proc).list()) do
+        for slot, _ in pairs(Utils.wrapPeripheral(proc).list() or {}) do
           interface.pullItems(proc, slot)
         end
       end
@@ -1013,7 +1014,7 @@ function Crafting.runMachineCycle(
     while itemsPulled < totalNeeded do
       local progressed = false
       for _ = 1, steps do
-        local listing = Utils.wrapPeripheral(resultPort).list()
+        local listing = Utils.wrapPeripheral(resultPort).list() or {}
         local resultSlot = findResultSlot(listing, itemBaseline, inputsToResult)
         if resultSlot then
           local resultName = listing[resultSlot] and listing[resultSlot].name
@@ -1080,7 +1081,7 @@ function Crafting.runMachineCycle(
       seen[item.processor] = true
       local port = resolveItemPort(item.processor)
       clearTasks[#clearTasks + 1] = function()
-        for slot, leftover in pairs(Utils.wrapPeripheral(port).list()) do
+        for slot, leftover in pairs(Utils.wrapPeripheral(port).list() or {}) do
           pullToStock(stockOut, leftover.name, port, slot)
         end
       end

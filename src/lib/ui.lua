@@ -3413,7 +3413,7 @@ local function drawChecklist()
   if outName then
     local outP = peripheral.wrap(outName)
     if outP then
-      for _, item in pairs(outP.list()) do
+      for _, item in pairs(outP.list() or {}) do
         outTotals[item.name] = (outTotals[item.name] or 0) + item.count
       end
     end

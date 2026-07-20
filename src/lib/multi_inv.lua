@@ -135,7 +135,7 @@ function MultiInv.wrap(ports)
     local tasks = {}
     for i, m in ipairs(members) do
       tasks[i] = function()
-        listings[i] = m.p.stock and m.p.stock() or m.p.list()
+        listings[i] = (m.p.stock and m.p.stock() or m.p.list()) or {}
       end
     end
     Utils.runParallel(tasks)

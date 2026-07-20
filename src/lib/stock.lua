@@ -12,9 +12,9 @@ local Stock = {}
 -- Prefers stock() over list() when available.
 local function listItems(p)
   if p.stock then
-    return p.stock()
+    return p.stock() or {}
   end
-  return p.list()
+  return p.list() or {}
 end
 
 local function getStockView()
