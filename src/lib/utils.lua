@@ -62,11 +62,27 @@ function Utils.prettifyId(name)
   )
 end
 
+-- True when the CC:Tweaked terminal font can draw every character of `s`
+-- (printable ASCII only). Localized displayNames -- e.g. a Russian client
+-- hands out Cyrillic names -- fail this and would render as one "?" per
+-- character, so callers fall back to the prettified item id instead.
+function Utils.isRenderable(s)
+  for i = 1, #s do
+    local b = s:byte(i)
+    if b < 32 or b > 126 then
+      return false
+    end
+  end
+  return true
+end
+
 -- Friendly name from an optional displayName + id. A leaked raw translation
--- key ("item.avaritia.x", no spaces but dots/underscores) is prettified.
+-- key ("item.avaritia.x", no spaces but dots/underscores) is prettified. A
+-- displayName the terminal cannot draw (localized game client) is ignored
+-- in favor of the prettified id.
 function Utils.friendlyName(displayName, name)
   local dn = displayName
-  if dn and dn ~= "" then
+  if dn and dn ~= "" and Utils.isRenderable(dn) then
     if dn:find(" ", 1, true) then
       return dn
     end

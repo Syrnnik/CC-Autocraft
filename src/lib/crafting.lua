@@ -59,7 +59,7 @@ local function missingLine(name, count, displayName)
   end
   local base = Utils.variantBase(name)
   local display = Utils.friendlyName(displayName, base)
-  if name ~= base and not displayName then
+  if name ~= base and not (displayName and Utils.isRenderable(displayName)) then
     display = display .. " (variant)"
   end
   return "- " .. display .. " x" .. count

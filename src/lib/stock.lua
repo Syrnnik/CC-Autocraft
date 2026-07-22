@@ -57,7 +57,8 @@ end
 -- two same-id variants are still distinguishable).
 local function ingredientLabel(recipeItem)
   local label = Utils.friendlyName(recipeItem.displayName, recipeItem.name)
-  if recipeItem.nbt and not recipeItem.displayName then
+  local dn = recipeItem.displayName
+  if recipeItem.nbt and not (dn and Utils.isRenderable(dn)) then
     label = label .. " (variant)"
   end
   return label
@@ -614,7 +615,14 @@ function Stock.fillMissingDisplayNames()
     tasks[#tasks + 1] = function()
       local detail = getItemDetail(view, slot)
       if detail and detail.displayName then
-        found[name] = detail.displayName
+        -- An undrawable (localized, non-ASCII) name is replaced by the
+        -- prettified id so the entry still lands in the store and repeat
+        -- calls stay no-ops (issue #2).
+        if Utils.isRenderable(detail.displayName) then
+          found[name] = detail.displayName
+        else
+          found[name] = Utils.prettifyId(name)
+        end
       end
     end
   end
@@ -944,6 +952,11 @@ function Stock.scanDisplayNames(wanted)
       local detail = getItemDetail(view, slot)
       local displayName = detail and detail.displayName
       if displayName then
+        -- Undrawable (localized) names degrade to the prettified id, same
+        -- as fillMissingDisplayNames (issue #2).
+        if not Utils.isRenderable(displayName) then
+          displayName = Utils.prettifyId(item.name)
+        end
         found[item.name] = displayName
         foundCount = foundCount + 1
       end

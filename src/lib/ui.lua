@@ -143,10 +143,18 @@ local function resolveDisplay(name)
   -- Plan-space variant keys ("name\0nbt") fall back to their base id.
   name = Utils.variantBase(name)
   local dn = DisplayNames.get(name)
-  if dn and not looksRaw(dn) then
-    return dn
+  if dn then
+    -- Stored names the terminal cannot draw (a store populated before
+    -- non-ASCII filtering, issue #2) fall back to the prettified id.
+    if not Utils.isRenderable(dn) then
+      return prettifyId(name)
+    end
+    if not looksRaw(dn) then
+      return dn
+    end
+    return prettifyId(dn)
   end
-  return prettifyId(dn or name)
+  return prettifyId(name)
 end
 
 -- Shared "displayName or resolve" for rows that carry their own displayName
@@ -155,6 +163,11 @@ end
 -- (Avaritia singularities) would all collapse to one shared name there.
 local function displayOrResolve(dn, name)
   if dn then
+    if not Utils.isRenderable(dn) then
+      -- Undrawable (localized) name: neutral prettified id, still avoiding
+      -- the by-id store so same-id variants don't borrow each other's names.
+      return prettifyId(Utils.variantBase(Fluids.stripPrefix(name)))
+    end
     if looksRaw(dn) then
       return prettifyId(dn)
     end

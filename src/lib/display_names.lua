@@ -1,4 +1,5 @@
 local Config = require("lib.config")
+local Utils = require("lib.utils")
 
 -- Persistent store mapping item id (e.g. "minecraft:oak_log") -> displayName
 -- (e.g. "Oak Log"). Populated by scan_names.lua (from Stock View) and when a
@@ -46,6 +47,11 @@ function DisplayNames.set(name, displayName)
   if not name or not displayName then
     return
   end
+  -- Names the terminal cannot draw (localized clients hand out non-ASCII
+  -- displayNames) never enter the store: the UI would show them as "???".
+  if not Utils.isRenderable(displayName) then
+    return
+  end
   local data = load()
   if data[name] == displayName then
     return
@@ -60,7 +66,11 @@ function DisplayNames.setMany(map)
   local data = load()
   local changed = false
   for name, displayName in pairs(map) do
-    if displayName and data[name] ~= displayName then
+    if
+      displayName
+      and Utils.isRenderable(displayName)
+      and data[name] ~= displayName
+    then
       data[name] = displayName
       changed = true
     end
