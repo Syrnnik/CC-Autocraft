@@ -833,8 +833,42 @@ function Stock.getDurabilityAwareTotals()
   return totals, maxDmg
 end
 
+-- Totals of the materials_out port, used to discount items already delivered.
+-- Skipped when materials_out is itself part of the stock roles: its contents
+-- are then already inside Stock.getTotals() and must not be counted twice.
+local function getMaterialsOutTotals()
+  local outName = Roles.getPort("materials_out")
+  if not outName then
+    return {}
+  end
+  for _, role in ipairs({ "stock_view", "stock_in", "stock_out" }) do
+    for _, port in ipairs(Roles.getPorts(role)) do
+      if port == outName then
+        return {}
+      end
+    end
+  end
+  local ok, out = pcall(peripheral.wrap, outName)
+  if not ok or not out then
+    return {}
+  end
+  local totals = {}
+  local okList, items = pcall(listItems, out)
+  if not okList or not items then
+    return {}
+  end
+  for _, item in pairs(items) do
+    totals[item.name] = (totals[item.name] or 0) + item.count
+  end
+  return totals
+end
+
 -- Returns all checklist items with their status relative to current stock and recipes.
--- Each entry: { name, needed, status }
+-- Each entry: { name, requested, inStock, needed, status }
+--   requested -- the clipboard amount
+--   inStock   -- how much of the still-undelivered part storage can cover
+--   needed    -- what is left to DO: the amount to move out ("in_stock") or to
+--                craft/obtain ("to_craft"/"missing"); 0 when done
 -- status: "done" | "in_stock" | "to_craft" | "missing"
 -- Returns nil if no clipboard found.
 function Stock.getChecklistStatus()
@@ -849,23 +883,52 @@ function Stock.getChecklistStatus()
   end
 
   local totals = Stock.getTotals()
+  local outTotals = getMaterialsOutTotals()
   local allRecipes = Recipes.getAllRecipes()
+
+  -- Both pools are consumed as entries are processed, so two clipboard lines
+  -- asking for the same item don't each claim the same stack.
+  local function take(pool, name, amount)
+    local got = math.min(pool[name] or 0, amount)
+    pool[name] = (pool[name] or 0) - got
+    return got
+  end
 
   local result = {}
   for _, entry in ipairs(rawItems) do
     local name = entry.item.name
-    local needed = entry.itemAmount or 0
+    local requested = entry.itemAmount or 0
     local status
+    local needed, inStock = 0, 0
+
     if entry.checked then
+      -- Ticked off by the player: claims neither stock nor materials_out.
       status = "done"
-    elseif (totals[name] or 0) >= needed then
-      status = "in_stock"
-    elseif allRecipes[name] then
-      status = "to_craft"
     else
-      status = "missing"
+      -- Already in materials_out -> delivered; the rest may
+      -- be covered by stock.
+      local delivered = take(outTotals, name, requested)
+      local remaining = requested - delivered
+      inStock = take(totals, name, remaining)
+
+      if remaining <= 0 then
+        status, needed = "done", 0
+      elseif inStock >= remaining then
+        status, needed = "in_stock", remaining
+      elseif allRecipes[name] then
+        status, needed = "to_craft", remaining - inStock
+      else
+        status, needed = "missing", remaining - inStock
+      end
     end
-    table.insert(result, { name = name, needed = needed, status = status })
+
+    table.insert(result, {
+      name = name,
+      requested = requested,
+      inStock = inStock,
+      needed = needed,
+      status = status,
+    })
   end
 
   return result

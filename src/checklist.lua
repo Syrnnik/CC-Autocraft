@@ -26,6 +26,15 @@ for _, item in ipairs(items) do
   local line = prefix .. " " .. item.name
   if item.status ~= "done" then
     line = line .. " x" .. item.needed
+    -- Partially covered by storage: show what the amount was reduced from.
+    if (item.inStock or 0) > 0 and item.needed < (item.requested or 0) then
+      line = line
+        .. " (have "
+        .. item.inStock
+        .. " of "
+        .. item.requested
+        .. ")"
+    end
   end
   print(line)
 end

@@ -3433,7 +3433,10 @@ local function drawChecklist()
   end
 
   local function effectiveStatus(item)
-    if item.status ~= "done" and (outTotals[item.name] or 0) >= item.needed then
+    -- Compare against the full clipboard amount: item.needed is what is LEFT
+    -- to do after stock and materials_out were already discounted.
+    local requested = item.requested or item.needed
+    if item.status ~= "done" and (outTotals[item.name] or 0) >= requested then
       return "done"
     end
     return item.status
@@ -3558,10 +3561,13 @@ local function drawChecklist()
   for _, item in ipairs(state.checklistItems) do
     local es = effectiveStatus(item)
     if subTab == "all" or es == subTab then
-      table.insert(
-        filtered,
-        { name = item.name, needed = item.needed, status = es }
-      )
+      table.insert(filtered, {
+        name = item.name,
+        needed = item.needed,
+        requested = item.requested,
+        inStock = item.inStock,
+        status = es,
+      })
     end
   end
   table.sort(filtered, function(a, b)
